@@ -13,8 +13,8 @@ class DataLoader:
     def __init__(self, logger, datasets, sizes, seed, device, checkpoint=None, **kwargs):
         """
         logger: logger
-        datasets: List[List[Dict]]
-            datasets[i_df][i_row] is config for each dataset.
+        datasets: List[Dict[Dict]]
+            datasets[i_df][data_name] is config for each dataset.
         seed: int
         checkpoint: str or None
         """
@@ -117,7 +117,7 @@ class NormalDataLoader(DataLoader):
 class BucketDataLoader(DataLoader):
     def __init__(self, logger, device, datasets, seed, bucket_dset, checkpoint=None, 
         bin_linspace=None, bins=None, add_lower_margin=True, add_upper_margin=True,
-        batch_size=None, num_tokens=None, keep_bucket=None, **kwargs):
+        batch_size=None, num_tokens=None, **kwargs):
         """
         bucket_dset: str
             name of dataset which bucketing is based on.
@@ -130,8 +130,6 @@ class BucketDataLoader(DataLoader):
         add_upper_margin: bool
         batch_size: Optional[int or List[int]]
         num_tokens: Optional, int
-        keep_bucket: bool
-            If True, memorize buckets of all dataset. Defaults to True when len(datasets) == 1
         """
         super().__init__(logger=logger, datasets=datasets, seed=seed,
             device=device, checkpoint=checkpoint, **kwargs)
@@ -141,9 +139,6 @@ class BucketDataLoader(DataLoader):
         if (batch_size is None) == (num_tokens is None):
             raise ValueError(f"Either batch_size({batch_size}) XOR num_tokens({num_tokens}) must be specified.")
         
-        if keep_bucket is None:
-            keep_bucket = len(self.dset_configss) == 1
-        self.keep_bucket = keep_bucket
         self.buckets = [None]*len(self.dset_configss)
         self.bucket_dset = bucket_dset
 
@@ -164,13 +159,15 @@ class BucketDataLoader(DataLoader):
             else:
                 self.batch_sizes = [batch_size]*(len(self.bins)-1)
         else:
-            self.batch_sizes = [num_tokens//(np.ceil(sup_len)-1) for sup_len in self.bins[1:]]
-    
+            self.batch_sizes = [int(num_tokens//(np.ceil(sup_len)-1)) for sup_len in self.bins[1:]]
+        if self.batch_sizes[-1] == 0:
+            logger.warning("batch_size[-1] is 0. This occurs when add_upper_margin is True and num_tokens is specified.")
     def get_idxs(self, dsets):
         ibs = np.digitize(dsets[self.bucket_dset].lengths, self.bins) - 1
         idxs = []
         for ib, batch_size in enumerate(self.batch_sizes):
             bucket_idxs = np.where(ibs == ib)[0]
+            if len(bucket_idxs) == 0: continue
             self.rstate.shuffle(bucket_idxs)
             idxs += [bucket_idxs[i:i+batch_size] for i in range(0, len(bucket_idxs), batch_size)]
         idxs = np.array(idxs, dtype=object)
@@ -218,7 +215,7 @@ class StringDataset(Dataset):
             self.str_list = list
         else:
             ext = os.path.splitext(path_list)[1]
-            logger.info(f"Loading {path_list} ...")
+            logger.info(f"Loading {path_list} ...") 
             if ext == '.pkl':
                 with open(path_list, 'rb') as f:
                     self.str_list = pickle.load(f)

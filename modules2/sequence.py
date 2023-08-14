@@ -1,10 +1,13 @@
 import math
 from functools import partial
+from addict import Dict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from ..models2 import function_name2func, Model
+from ..models2 import function_name2func, Model, function_config2func, \
+    init_config2func
+
 
 
 # sequence modules
@@ -15,26 +18,41 @@ class TeacherForcer(nn.Module):
         self.target_slices = [slice(None)]*length_dim+[slice(1, None)]
     def forward(self, input):
         """
-        input: torch.tensor(any)[..., legnth, ...]
-        output:
-          - torch.tensor(any)[..., length-1, ...]
-          - torch.tensor(any)[..., length-1, ...]
+        Parameters
+        ----------
+        input: (any)[..., legnth, ...]
+        
+        Returns
+        -------
+        input: (any)[..., length-1, ...]
+        target: [..., length-1, ...]
         """
         return input[self.input_slices], input[self.target_slices]
 
 class MaskMaker(nn.Module):
-    def __init__(self, mask_token, type='bool', direction='equal'):
+    def __init__(self, mask_token, dtype='bool', direction='equal'):
         super().__init__()
         self.mask_token = mask_token
-        self.type_ = type
+        self.dtype = dtype
         self.direction = direction
-    def forward(self, input):
+    def forward(self, input: torch.Tensor):
+        """
+        Parameters
+        ----------
+        input: (torch.int or long)[...]
+
+        Returns
+        -------
+        mask: (torch.bool or int)[...]
+        """
         if self.direction == 'equal':
             mask = input == self.mask_token
         else:
             mask = input != self.mask_token
-        if self.type_ == 'bool':
+        if self.dtype == 'bool':
             pass
+        elif self.dtype == 'int':
+            mask = mask.to(torch.int)
         return mask
 
 class SelfAttentionLayer(nn.Module):
@@ -86,7 +104,7 @@ class SelfAttentionLayer(nn.Module):
         return self.dropout2(cur_input)
 
 class PositionalEmbedding(nn.Module):
-    def __init__(self, embedding: dict, dropout: float, max_len:int, padding_idx=None):
+    def __init__(self, embedding: dict, dropout: float, max_len:int):
         super().__init__()
         self.embedding = nn.Embedding(**embedding)
         emb_size = embedding['embedding_dim']
@@ -101,89 +119,37 @@ class PositionalEmbedding(nn.Module):
         pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
     
-    def forward(self, input):
+    def forward(self, input, position: int=None):
         """
-        input: torch.tensor(torch.long)[batch_size, length]
-        
+        Parameters
+        ----------
+        input: (torch.long)[batch_size, length]
+        position(->None): int or None        
         """
         input = self.embedding(input) * self.factor
-        input = input + Variable(self.pe[:, :input.size(1)], requires_grad=False)
-        return self.dropout(input)
-
-
-# functions
-def NewGELU(input):
-    return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) \
-        * (input + 0.044715 * torch.pow(input, 3.0))))
-def sigmoid(cur_input):
-    return 1/(1+math.e**(-cur_input))
-
-def init_config2func(layer_config):
-    if type(layer_config) == str:
-        name = layer_config
-    elif type(layer_config) in {int, float}:
-        name = layer_config
-    elif layer_config == {}:
-        name = 'none'
-    else:
-        name = layer_config.type
-    if type(name) in {int, float}:
-        return lambda cur_input: nn.init.constant_(cur_input, float(name))
-    if name == 'glorot_uniform':
-        return nn.init.xavier_uniform_
-    elif name == 'glorot_normal':
-        return nn.init.xavier_normal_
-    elif name == 'he_uniform':
-        return nn.init.kaiming_uniform_
-    elif name == 'he_normal':
-        return nn.init.kaiming_normal_
-    elif name == 'uniform':
-        return lambda cur_input: nn.init.uniform_(cur_input, layer_config.a, layer_config.b)
-    elif name == 'normal':
-        return lambda cur_input: nn.init.normal_(cur_input, layer_config.mean, layer_config.std)
-    elif name in ['zero', 'zeros']:
-        return nn.init.zeros_
-    elif name in ['one', 'ones']:
-        return nn.init.ones_
-    elif name == 'none':
-        return lambda cur_input: None
-    else:
-        raise ValueError(f"Unsupported types of init function: {layer_config}")
-
-function_name2func = {
-    'relu': F.relu,
-    'gelu': F.gelu,
-    'sigmoid': torch.sigmoid,
-    'tanh': torch.tanh,
-    'newgelu': NewGELU,
-    'none': lambda cur_input: cur_input,
-    'exp': torch.exp,
-    'log': torch.log,
-    'sum': torch.sum,
-    'mean': torch.mean,
-    'log_softmax': F.log_softmax,
-    'softplus': F.softplus
-}
-def function_config2func(config):
-    if config.type in function_name2func:
-        args = config.copy()
-        type_ = args.pop('type')
-        if len(args) == 0:
-            return function_name2func[config.type]
+        if position is None:
+            pe = Variable(self.pe[:, :input.size(1)], requires_grad=False)
         else:
-            return partial(function_name2func[type_], **args)
-    elif config.type == 'affine':
-        weight = config.weight if config.weight else 1.0
-        bias = config.bias if config.bias else 0.0
-        return lambda cur_input: cur_input*weight+bias
-    else:
-        raise ValueError(f"Unsupported type of function config: {config.type}")
+            pe = Variable(self.pe[:, position], requires_grad=False)
+        return self.dropout(input+pe)
 
-# encoder decoders
+# encoders
 class TransformerEncoder(nn.Module):
-    def __init__(self, layer, n_layer, norm=None):
+    def __init__(self, layer, n_layer, norm=None, init=Dict()):
+        """
+        AttentionEncoderと同じ。
+
+        Parameters
+        ----------
+        layer: dict
+            Parameters for nn.TransformerEncoderLayer
+        n_layer: int
+        norm: dict or None
+            Parameters for nn.LayerNorm
+        init: Dict
+            Initialization for each name in self.encoder.layers[i].state_dict()
+        """
         super().__init__()
-        # process layer config
         d_model = layer['d_model']
         if 'activation' in layer:
             layer['activation'] = function_config2func(layer['activation'])
@@ -193,23 +159,28 @@ class TransformerEncoder(nn.Module):
         if norm is not None:
             norm = nn.LayerNorm(normalized_shape=d_model, **norm)
         self.encoder = nn.TransformerEncoder(layer, num_layers=n_layer, norm=norm)
-    def forward(self, src, key_padding_mask):
-        """
-        src: torch.tensor(float)[batch_size, length, d_model]
-        key_padding_mask: torch.tensor(float)[batch_size, length]
-        """
-        src = src.transpose(0, 1).contiguous()
-        return self.encoder(src=src, mask=None, src_key_padding_mask=key_padding_mask)
 
-class TransformerDecoder(nn.Module):
-    def __init__(self, layer, n_layer, max_len, norm=None):
+        # weight init
+        for layer in self.encoder.layers:
+            for name, param in layer.state_dict().items():
+                init_config2func(init[name])(param)
+    
+    def forward(self, src, key_padding_mask):
         """
         Parameters
         ----------
-        layer: arguments for 
-        
-        
+        src: (torch.float)[length, batch_size, d_model]
+        key_padding_mask: (torch.float)[batch_size, length]
+
+        Returns
+        -------
+        memory: (torch.float)[length, batch_size, d_model]
         """
+        return self.encoder(src=src, mask=None, src_key_padding_mask=key_padding_mask)
+
+# decoders
+class TransformerDecoder(nn.Module):
+    def __init__(self, layer, n_layer, max_len, norm=None):
         super().__init__()
         square_mask = nn.Transformer.generate_square_subsequent_mask(max_len)
         self.register_buffer('square_subsequent_mask', square_mask)
@@ -222,87 +193,278 @@ class TransformerDecoder(nn.Module):
         if norm is not None:
             norm = nn.LayerNorm(normalized_shape=d_model, **norm)
         self.decoder = nn.TransformerDecoder(layer, num_layers=n_layer, norm=norm)
-
     def forward(self, mode='forced', *args, **kwargs):
+        """
+        Parameters
+        ----------
+        mode: str
+            Mode to forward
+        args, kwargs: 
+            See each function for details.
+        """
         if mode == 'forced':
             return self.forced(*args, **kwargs)
         elif mode == 'cell_forward':
             return self.cell_forward(*args, **kwargs)
-        elif mode == 'prepare_greedy':
-            return self.prepare_greedy(*args, **kwargs)
-    def forced(self, memory, memory_key_padding_mask):
+        elif mode == 'prepare_cell_forward':
+            return self.prepare_cell_forward(*args, **kwargs)
+        else:
+            raise ValueError(f'Unsupported type of mode: {mode}')
+    def forced(self, tgt, memory, memory_key_padding_mask):
+        """
+        Parameters
+        ----------
+        tgt: (torch.float)[length, batch_size, d_model]
+        memory: (torch.float)[length, batch_size, d_model]
+        memory_key_padding_mask: (torch.float)[batch_size, length, d_model]
+
+        Returns
+        -------
+        emb: (torch.)
+        
+        """
         length = tgt.shape[1]
         mask = self.square_subsequent_mask[:length, :length]
-        tgt = tgt.transpose(0, 1).contiguous()
         return self.decoder(tgt=tgt, memory=memory, tgt_mask=mask, memory_key_padding_mask=memory_key_padding_mask).transpose(0, 1)
-    def prepare_greedy(self, memory, memory_key_padding_mask, start_token):
-        batch_size, src_len, d_model = memory.shape[0]
-        nhead = self.decoder.layers[0].multihead_attn.num_heads
-        n_layer = len(self.decoder.layers)
-        device = memory.device
-
-        mem_attn_mask = torch.zeros_like(memory_key_padding_mask, dtype=torch.float)
-        mem_attn_mask.masked_fill_(memory_key_padding_mask, float("-inf"))
-        mem_attn_mask = mem_attn_mask.view(batch_size, 1, 1, src_len).   \
-                    expand(-1, nhead, -1, -1).reshape(batch_size*nhead, 1, src_len)
-
-        cur_input = torch.full_like((1, batch_size), fill_value=start_token, 
-            dtype=torch.long, device=device)
-        # calcluate memory
-        ks = [torch.full((batch_size*nhead, 0, d_model//nhead), fill_value=0.0) for i in range(n_layer)]
-        vs = [torch.full((batch_size*nhead, 0, d_model//nhead), fill_value=0.0) for i in range(n_layer)]
-        mem_ks = []
-        mem_vs = []
-        for layer in self.decoder.layers:
-            attn = layer.multihead_attn
-            kv =  F.linear(memory, attn.in_proj_weight[d_model:], attn.in_proj_bias[d_model:])
-            k, v = kv.chunk(2, dim=-1)
-            k = k.contiguous().view(k.shape[0], batch_size * nhead, d_model//nhead).transpose(0, 1)
-            v = v.contiguous().view(v.shape[0], batch_size * nhead, d_model//nhead).transpose(0, 1)
-            mem_ks.append(k)
-            mem_vs.append(v)
-        return cur_input, mem_attn_mask, ks, vs, mem_ks, mem_vs
-    def cell_forward(self, cur_input, mem_attn_mask, ks, vs, mem_ks, mem_vs):
-        batch_size, _, d_model = cur_input.shape
-
+    def cell_forward(self, tgt, mem_attn_mask, ks, vs, mem_ks, mem_vs):
+        d_model = tgt.shape[-1]
+        x = tgt
         for i_layer, layer in enumerate(self.decoder.layers):
-            residual = cur_input
+            residual = x
             attn = layer.self_attn
             num_heads = attn.num_heads
-            head_dim = d_model // num_heads
-            q, k, v = F.linear(cur_input, attn.in_proj_weight, attn.in_proj_bias).chunk(3, dim=-1)
-            q = q.contiguous().view(batch_size * num_heads, head_dim).unsqueeze(1)
-            k = k.contiguous().view(batch_size * num_heads, head_dim).unsqueeze(1)
-            v = v.contiguous().view(batch_size * num_heads, head_dim).unsqueeze(1)
+            bsz, embed_dim = x.shape
+            head_dim = embed_dim // num_heads
+            q, k, v = F.linear(x, attn.in_proj_weight, attn.in_proj_bias).chunk(3, dim=-1)
+            # q = q.contiguous().view(1, bsz * num_heads, head_dim).transpose(0, 1)
+            q = q.contiguous().view(bsz * num_heads, 1, head_dim)
+            k = k.contiguous().view(bsz * num_heads, head_dim).unsqueeze(1)
+            v = v.contiguous().view(bsz * num_heads, head_dim).unsqueeze(1)
             ks[i_layer] = torch.cat([ks[i_layer], k], dim=1)
             vs[i_layer] = torch.cat([vs[i_layer], v], dim=1)
 
             dropout_p = attn.dropout if attn.training else 0.0
             attn_output, _ = F._scaled_dot_product_attention(q, ks[i_layer], vs[i_layer], None, dropout_p)
-            attn_output = attn_output.transpose(0, 1).contiguous().view(1 * batch_size, d_model)
+            attn_output = attn_output.transpose(0, 1).contiguous().view(bsz, embed_dim)
             attn_output = attn.out_proj(attn_output)
-            attn_output = attn_output.view(1, batch_size, attn_output.size(1))
-            cur_input = attn_output
-            cur_input = layer.norm1(layer.dropout1(cur_input)+residual)
+            attn_output = attn_output.view(bsz, attn_output.size(1))
+            x = attn_output
+            x = layer.norm1(layer.dropout1(x)+residual)
 
-            residual = cur_input
+            residual = x
             attn = layer.multihead_attn
             num_heads = attn.num_heads
-            head_dim = d_model // num_heads
-            q =  F.linear(cur_input, attn.in_proj_weight[:d_model], attn.in_proj_bias[:d_model])
-            q = q.contiguous().view(batch_size * num_heads, head_dim).unsqueeze(1)
+            bsz, embed_dim = x.shape
+            head_dim = embed_dim // num_heads
+            q =  F.linear(x, attn.in_proj_weight[:d_model], attn.in_proj_bias[:d_model])
+            q = q.contiguous().view(1, bsz * num_heads, head_dim).transpose(0, 1)
             dropout_p = 0.0 if not attn.training else attn.dropout
             attn_output, _ = F._scaled_dot_product_attention(q, mem_ks[i_layer], mem_vs[i_layer], mem_attn_mask, dropout_p)
-            attn_output = attn_output.transpose(0, 1).contiguous().view(1 * batch_size, d_model)
+            attn_output = attn_output.transpose(0, 1).contiguous().view(bsz, embed_dim)
             attn_output = attn.out_proj(attn_output)
-            attn_output = attn_output.view(1, batch_size, attn_output.size(1))
-            cur_input = attn_output
-            cur_input = layer.norm2(layer.dropout2(cur_input)+residual)
-            cur_input = layer.norm3(layer.dropout3(layer.linear2(layer.dropout(layer.activation(layer.linear1(cur_input)))))+cur_input)
-        if self.decoder.norm is not None:
-            cur_input = self.decoder.norm(cur_input)
-        return cur_input, ks, vs, mem_ks, mem_vs
+            attn_output = attn_output.view(bsz, attn_output.size(1))
+            x = attn_output
+            x = layer.norm2(layer.dropout2(x)+residual)
+            x = layer.norm3(layer.dropout3(layer.linear2(layer.dropout(layer.activation(layer.linear1(x)))))+x)
+        out = self.decoder.norm(x)
+        return out
+
+    def prepare_cell_forward(self, memory, memory_key_padding_mask, start_token):
+        ilen, bsize, d_model = memory.shape
+        nhead = self.decoder.layers[0].multihead_attn.num_heads
+        n_layer = len(self.decoder.layers)
+        device = memory.device
+        mem_attn_mask = torch.zeros_like(memory_key_padding_mask, dtype=memory.dtype)
+        mem_attn_mask.masked_fill_(memory_key_padding_mask, float("-inf"))
+        mem_attn_mask = mem_attn_mask.view(bsize, 1, 1, ilen). \
+            expand(-1, nhead, -1, -1).reshape(bsize * nhead, 1, ilen)
+
+        ks = [torch.full((bsize*nhead, 0, d_model//nhead), fill_value=0.0, device=device) for i in range(n_layer)]
+        vs = [torch.full((bsize*nhead, 0, d_model//nhead), fill_value=0.0, device=device) for i in range(n_layer)]
+        mem_ks = []
+        mem_vs = []
+        for layer in self.decoder.layers:
+            attn = layer.multihead_attn
+            w_kv = attn.in_proj_weight[d_model:]
+            b_kv = attn.in_proj_bias[d_model:]
+            
+            kv =  F.linear(memory, w_kv, b_kv)
+            k, v = kv.chunk(2, dim=-1)
+            k = k.contiguous().view(k.shape[0], bsize * nhead, d_model//nhead).transpose(0, 1)
+            v = v.contiguous().view(v.shape[0], bsize * nhead, d_model//nhead).transpose(0, 1)
+            mem_ks.append(k)
+            mem_vs.append(v)
+        return mem_attn_mask, ks, vs, mem_ks, mem_vs
+    
+
+"""
+このクラスは最小限の機能のみで, あくまで各クラスを優先する
+"""
+class LatentSequenceDecoder(nn.Module):
+    def forward(self, mode='forced', *args, **kwargs):
+        """
+        Parameters
+        ----------
+        mode: str
+            Mode to forward
+        args, kwargs: 
+            See each function for details.
+        """
+        if mode == 'forced':
+            return self.forced(*args, **kwargs)
+        elif mode == 'cell_forward':
+            return self.cell_forward(*args, **kwargs)
+        elif mode == 'prepare_cell_forward':
+            return self.prepare_cell_forward(*args, **kwargs)
+        else:
+            raise ValueError(f'Unsupported type of mode: {mode}')
+    def forced(self, *args, **kwargs):
+        raise NotImplementedError
+    def cell_forced(self, *args, **kwargs):
+        raise NotImplementedError
+    def prepare_cell_forced(self, *args, **kwargs):
+        raise NotImplementedError
+
+class AttentionDecoder(LatentSequenceDecoder):
+    name = 'attention_decoder'
+    def __init__(self, layer, num_layers, init, max_len, load_square_mask='keep'):
+        """
+        layer: dict
+            input for SelfAttentionLayer
+        num_layers: int
+        init: dict
+            Initialization for each parameter
+        max_len: int
+        load_square_mask: いる?
+        """
+        super().__init__()
+        square_mask = nn.Transformer.generate_square_subsequent_mask(max_len)
+        self.register_buffer('square_subsequent_mask', square_mask)
+        d_model = layer['mha']['embed_dim']
+        self.d_model = d_model
+
+        # decoder
+        decoder_layer = SelfAttentionLayer(**layer)
+        self.decoder = nn.TransformerEncoder(encoder_layer=decoder_layer, num_layers=num_layers)
+        
+        # weight init
+        for layer in self.decoder.layers:
+            for param_name in init:
+                init_config2func(init[param_name])(layer.state_dict()[param_name])
+
+        # define operation in load_state_dict
+        if load_square_mask == 'keep':
+            def pre_hook(model, state_dict, prefix, local_metadata, strict,
+                    missing_keys, upexpected_keys, error_msgs):
+                state_dict[prefix+"square_subsequent_mask"] = model.square_subsequent_mask
+        elif load_square_mask == 'load':
+            def pre_hook(model, state_dict, prefix, local_metadata, strict,
+                    missing_keys, upexpected_keys, error_msgs):
+                if prefix+"square_subsequent_mask" in state_dict:
+                    model.register_buffer('square_subsequent_mask', state_dict[prefix+"square_subsequent_mask"])
+                else:
+                    state_dict[prefix+"square_subsequent_mask"] = model.square_subsequent_mask
+        elif load_square_mask == 'larger':
+            def pre_hook(model, state_dict, prefix, local_metadata, strict,
+                    missing_keys, upexpected_keys, error_msgs):
+                if prefix+"square_subsequent_mask" in state_dict and \
+                    len(model.square_subsequent_mask) < len(state_dict[prefix+"square_subsequent_mask"]):
+                    model.register_buffer('square_subsequent_mask', state_dict[prefix+"square_subsequent_mask"])
+                else:
+                    state_dict[prefix+"square_subsequent_mask"] = model.square_subsequent_mask
+        else:
+            raise ValueError(f"Unsupported type of config.load_square_mask: {load_square_mask}")
+        self._register_load_state_dict_pre_hook(pre_hook, with_module=True)
+
+
+
+
+
+    def initial_state(self, batch):
+        return [torch.zeros(size=(0, len(batch[self.input_latent]), self.d_model), dtype=torch.float,
+            device=self.device) for i_layer in range(self.decoder.num_layers)]
+    def zip_state(self, state):
+        return torch.cat(state, dim=-1).transpose(0, 1).contiguous().reshape(state[0].shape[1], -1)
+    def unzip_state(self, state):
+        batch_size, state_size = state.shape # [batch_size, length*num_layers*d_model]
+        length = int(state_size / (self.decoder.num_layers*self.d_model))
+        state = state.view((batch_size, length, self.decoder.num_layers, self.d_model))
+        state = state.permute(2, 1, 0, 3)
+        return list(state)
+
+    # tgt, memory, memory_key_padding_mask
+    def forced(self, tgt, latent):
+        """
+        Parameters
+        ----------
+        tgt: (float)[max_len, batch_size, d_model]
+        latent (float)[batch_size, d_model]
+        """
+        max_len, _, _ = tgt.shape
+        tgt += latent.unsqueeze(0)
+        input_mask = self.square_subsequent_mask[:max_len, :max_len]
+        output = self.decoder(src=tgt, mask=input_mask, src_key_padding_mask=None)
+        return output
+
+    def cell_forward(self, state, cur_input, batch, position):
+        cur_input_emb = self.embedding(cur_input)
+        cur_input_emb = self.pe.encode_position(cur_input_emb, position)+batch[self.input_latent]
+        attn_mask = self.square_subsequent_mask[position+1:position+2, :position+1]
+        cur_input_emb = cur_input_emb.unsqueeze(0)
+        cur_output = cur_input_emb
+        for i_layer, layer in enumerate(self.decoder.layers):
+            prev_y = state[i_layer]
+            cur_y = layer.norm1(cur_output)
+            y = torch.cat([prev_y, cur_y], dim=0)
+            state[i_layer] = y
+            cur_attn = layer.self_attn(cur_y, y, y, attn_mask=attn_mask,
+                        key_padding_mask=None, need_weights=False)[0]
+            cur_output = cur_output + layer.dropout1(cur_attn)
+            cur_output = cur_output + layer._ff_block(layer.norm2(cur_output))
+        cur_proba = self.dec2proba(cur_output)
+        return cur_proba, state
+
 class CrossEntropyLoss(nn.CrossEntropyLoss):
     def forward(self, input, target):
         n_class = input.shape[-1]
         return super().forward(input=input.view(-1, n_class), target=target.ravel())
+
+
+def greedy_decode_init(batch_size, device, start_token):
+    cur_input = torch.full((batch_size, ), fill_value=start_token,
+        dtype=torch.long, device=device)
+    return cur_input, [cur_input]
+def greedy_decode_add(cur_proba, outs):
+    cur_input = torch.argmax(cur_proba, dim=-1)
+    outs.append(cur_input)
+    return cur_input, outs
+def greedy_decode_aggregate(outs):
+    return torch.stack(outs)
+
+class GreedyDecoder(nn.Module):
+    def __init__(self, start_token):
+        super().__init__()
+        self.start_token = start_token
+    def forward(self, *args, mode, **kwargs):
+        if mode == 'init':
+            return self.init(*args, **kwargs)
+        if mode == 'add':
+            return self.add(*args, **kwargs)
+        elif mode == 'aggregate':
+            return self.aggregate(*args, **kwargs)
+        else:
+            raise ValueError(f"Unsupported type of mode: {mode}")
+    def init(self, batch_size, device):
+        cur_input = torch.full((batch_size, ), fill_value=self.start_token,
+            dtype=torch.long, device=device)
+        return cur_input, [cur_input]
+    def add(self, cur_proba, outs):
+        cur_input = torch.argmax(cur_proba, dim=-1)
+        outs.append(cur_input)
+        return cur_input, outs
+    def aggregate(self, outs):
+        return torch.stack(outs, dim=1)
+
+class BeamSearcher(nn.Module):
+    def __init__(self, start_token):
+        super().__init__()

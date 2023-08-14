@@ -34,7 +34,7 @@ class NumpyAccumulator:
     def __call__(self, batch):
         self.accums.append(self.converter(batch[self.input]))
 class ListAccumulator:
-    def __init__(self, logger, input, org_type='np.array', **kwargs):
+    def __init__(self, logger, input, org_type='torch.tensor', batch_dim=None, **kwargs):
         """
         Parameters
         ----------
@@ -45,14 +45,23 @@ class ListAccumulator:
         check_leftargs(self, logger, kwargs)
         self.input = input
         if org_type == 'list':
+            assert batch_dim is None, f"batch_dim cannot be defined when org_type is list"
             self.converter = EMPTY
-        elif org_type in {'tensor', 'torch.tensor'}:
-            self.converter = lambda x: list(x.cpu().numpy())
-        elif org_type in {'np.array', 'np.ndarray', 'numpy', 'numpy.array', 'numpy.ndarray'}:
-            self.converter = lambda x: list(x)
+        else:
+            if batch_dim is None: batch_dim = 0
+            if org_type in {'tensor', 'torch.tensor'}:
+                if batch_dim == 0:
+                    self.converter = lambda x: list(x.cpu().numpy())
+                else:
+                    self.converter = lambda x: list(x.transpose(batch_dim, 0).cpu().numpy())
+            elif org_type in {'np.array', 'np.ndarray', 'numpy', 'numpy.array', 'numpy.ndarray'}:
+                if batch_dim == 0:
+                    self.converter = lambda x: list(x)
+                else:
+                    self.converter = lambda x: list(x.swapaxes(0, batch_dim))
     def init(self):
         self.accums = []
-    def accumualte(self):
+    def accumulate(self):
         return self.accums
     def save(self, path_without_ext):
         path = path_without_ext + '.pkl'
