@@ -106,53 +106,7 @@ class Model(nn.ModuleDict):
         self.logger = logger
     def forward(self, batch, processes: list, debug=False):
         for process in processes:
-            if debug:
-                self.logger.debug("Process: ")
-                for key, value in process.items():
-                    self.logger.debug(f"  {key}: {value}")
-                self.logger.debug("Variables in batch:")
-                for key, value in batch.items():
-                    type_ = type(value)
-                    if isinstance(value, (torch.Tensor, np.ndarray)):
-                        value = value.shape
-                    elif not isinstance(value, (int, float, str)):
-                        value = ""
-                    self.logger.debug(f"  {key}({type_.__name__}): {value}")
-
-            type_ = process.type if 'type' in process else 'forward'
-            if type_ in ['forward', 'function']:
-                if type_ == 'forward':
-                    func = self[process.module]
-                elif type_ == 'function':
-                    func = function_config2func(process.function)
-                else:
-                    raise ValueError(f"Unsupported type of process: {type_}")
-                input_name = process.input
-                if input_name is None:
-                    output = func(**process.kwargs)
-                if isinstance(input_name, str):
-                    output = func(batch[input_name], **process.kwargs)
-                elif isinstance(input_name, list):
-                    output = func(*[batch[i] for i in input_name], **process.kwargs)
-                elif isinstance(input_name, dict):
-                    output = func(**{n: batch[i] for n, i in input_name.items()}, **process.kwargs)
-                output_name = process.output
-                if isinstance(output_name, str):
-                    batch[output_name] = output
-                elif isinstance(output_name, list):
-                    for oname0, out in zip(output_name, output):
-                        batch[oname0] = out
-                else:
-                    raise ValueError(f'Unsupported type of output: {output_name}')
-            elif type_ == 'iterate':
-                length = process.length
-                if isinstance(length, str): length = batch[length]
-                for l in range(length):
-                    batch['iterate_i'] = l
-                    self(batch, process.processes)
-            else:
-                raise ValueError(f"Unsupported type of process: {type_}")
-
+            batch = process(batch)
     def load(self, path, replace={}, strict=True):
         if os.path.isfile(path):
             state_dict = torch.load(path)
