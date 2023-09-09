@@ -1,21 +1,27 @@
 from .models2 import function_config2func
+class Process:
+    def __init__(self):
+        pass
+    def __call__(self, model, batch):
+        raise NotImplementedError
 
-class CallProcess:
-    def __init__(self, input, output=None):
+class CallProcess(Process):
+    def __init__(self, input, output=None, **kwargs):
         self.input = input
         self.output = output
         if self.output is None:
             self.output = self.input
+        self.kwargs = kwargs
     def __call__(self, model, batch):
         callable_ = self.get_callable(model)
         if self.input is None:
-            output = callable_()
+            output = callable_(**self.kwargs)
         if isinstance(self.input, str):
-            output = callable_(batch[self.input])
+            output = callable_(batch[self.input], **self.kwargs)
         elif isinstance(self.input, list):
-            output = callable_(*[batch[i] for i in self.input])
+            output = callable_(*[batch[i] for i in self.input], **self.kwargs)
         elif isinstance(self.input, dict):
-            output = callable_(**{name: batch[i] for name, i in self.input.items()})
+            output = callable_(**{name: batch[i] for name, i in self.input.items()}, **self.kwargs)
         else:
             raise ValueError(f'Unsupported type of input: {self.input}')
         if isinstance(self.output, str):
@@ -28,7 +34,7 @@ class CallProcess:
     def get_callable(self, model):
         raise NotImplementedError
 class ForwardProcess(CallProcess):
-    def __init__(self, module, input, output=None):
+    def __init__(self, module, input, output=None, **kwargs):
         """
         Parameters
         ----------
@@ -38,14 +44,16 @@ class ForwardProcess(CallProcess):
             Name of input(s) in the batch to the module.
         output: str, list[str], or None
             Name of output(s) in the batch from the module.
-            If None, input is used as output (inplace process)        
+            If None, input is used as output (inplace process)
+        kwargs: dict
+            他のパラメータはモジュールに直接渡される。    
         """
-        super().__init__(input, output)
+        super().__init__(input, output, **kwargs)
         self.module = module
     def get_callable(self, model):
         return  model[self.module]
 class FunctionProcess(CallProcess):
-    def __init__(self, function, input, output=None):
+    def __init__(self, function, input, output=None, **kwargs):
         """
         Parameters
         ----------
@@ -56,12 +64,17 @@ class FunctionProcess(CallProcess):
         output: str, list[str], or None
             Name of output(s) in the batch from the module.
             If None, input is used as output (inplace process) 
+        kwargs: dict
+            他のパラメータはモジュールに直接渡される。    
         """
-        super().__init__(input, output)
+        super().__init__(input, output, **kwargs)
         self.function = function_config2func(function)
     def get_callable(self, model):
         return self.function
-class IterateProcess:
+
+import torch
+import numpy as np
+class IterateProcess(Process):
     def __init__(self, length, processes, i_name='iterate_i'):
         """
         Parameters
@@ -79,7 +92,7 @@ class IterateProcess:
     def __call__(self, model, batch):
         for i in range(batch[self.length]):
             batch[self.i_name] = i
-            for process in process:
+            for i, process in enumerate(self.processes):
                 process(model, batch)
 
 process_type2class = {
@@ -87,7 +100,7 @@ process_type2class = {
     'function': FunctionProcess,
     'iterate': IterateProcess
 }
-def get_process(type, **kwargs):
+def get_process(type='forward', **kwargs):
     return process_type2class[type](**kwargs)
 def get_process_from_config(config):
     return get_process(**config)

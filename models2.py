@@ -14,8 +14,8 @@ import torch.nn.functional as F
 def NewGELU(input):
     return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) \
         * (input + 0.044715 * torch.pow(input, 3.0))))
-def sigmoid(cur_input):
-    return 1/(1+math.e**(-cur_input))
+def sigmoid(input):
+    return 1/(1+math.e**(-input))
 
 def init_config2func(layer_config):
     if type(layer_config) == str:
@@ -27,7 +27,7 @@ def init_config2func(layer_config):
     else:
         name = layer_config.type
     if type(name) in {int, float}:
-        return lambda cur_input: nn.init.constant_(cur_input, float(name))
+        return lambda input: nn.init.constant_(input, float(name))
     if name == 'glorot_uniform':
         return nn.init.xavier_uniform_
     elif name == 'glorot_normal':
@@ -37,15 +37,15 @@ def init_config2func(layer_config):
     elif name == 'he_normal':
         return nn.init.kaiming_normal_
     elif name == 'uniform':
-        return lambda cur_input: nn.init.uniform_(cur_input, layer_config.a, layer_config.b)
+        return lambda input: nn.init.uniform_(input, layer_config.a, layer_config.b)
     elif name == 'normal':
-        return lambda cur_input: nn.init.normal_(cur_input, layer_config.mean, layer_config.std)
+        return lambda input: nn.init.normal_(input, layer_config.mean, layer_config.std)
     elif name in ['zero', 'zeros']:
         return nn.init.zeros_
     elif name in ['one', 'ones']:
         return nn.init.ones_
     elif name == 'none':
-        return lambda cur_input: None
+        return lambda input: None
     else:
         raise ValueError(f"Unsupported types of init function: {layer_config}")
 
@@ -55,7 +55,7 @@ function_name2func = {
     'sigmoid': torch.sigmoid,
     'tanh': torch.tanh,
     'newgelu': NewGELU,
-    'none': lambda cur_input: cur_input,
+    'none': lambda input: input,
     'exp': torch.exp,
     'log': torch.log,
     'sum': torch.sum,
@@ -68,15 +68,22 @@ function_name2func = {
 def function_config2func(config):
     if isinstance(config, str):
         return function_name2func[config]
-    elif config.type == 'affine':
-        weight = config.weight if 'weight' in config else 1.0
-        bias = config.bias if 'bias' in config else 0.0
-        return lambda x: x*weight+bias
     else:
         return partial(function_name2func[config.pop('type')], **config)
 
-# Model
+# Modules
 module_type2class = {}
+class Affine(nn.Module):
+    def __init__(self, weight=1.0, bias=0.0):
+        super().__init__()
+        self.weight = weight
+        self.bias = bias
+    def forward(self, input):
+        return input*self.weight+self.bias
+for cls in [Affine]:
+    module_type2class[cls.__name__] = cls
+
+# Model
 def get_module(logger, type, **kwargs):
     cls = module_type2class[type]
     args = set(signature(cls.__init__).parameters.keys())
@@ -102,11 +109,13 @@ class Model(nn.ModuleDict):
                 continue
             logger.debug(f"Building {mod_name}...")
             mods[mod_name] = get_module(logger=logger, **mod_config)
+        logger.debug("Building finished.")
         super().__init__(modules=mods)
         self.logger = logger
     def forward(self, batch, processes: list, debug=False):
-        for process in processes:
-            batch = process(batch)
+        for i, process in enumerate(processes):
+            process(self, batch)
+        return batch
     def load(self, path, replace={}, strict=True):
         if os.path.isfile(path):
             state_dict = torch.load(path)
@@ -150,3 +159,7 @@ class Model(nn.ModuleDict):
                 raise ValueError(f"Invalid file: {path}")
             else:
                 raise FileNotFoundError(f"No such file or directory: {path}")    
+    def save_state_dict(self, path):
+        os.makedirs(path, exist_ok=True)
+        for key, module in self.items():
+            torch.save(module.state_dict(), os.path.join(path, f"{key}.pth"))

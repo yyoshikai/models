@@ -1,6 +1,7 @@
+# 今は使っていない。
 import torch.nn as nn
-from .models import sigmoid 
-from .utils import check_leftargs
+from ..models import sigmoid 
+from ..utils import check_leftargs
 # LossManager
 class LossManager(nn.Module):
     def __init__(self, logger, sizes, input, modes, **kwargs):
@@ -41,28 +42,6 @@ class LinearLossManager(LossManager):
         else:
             return self.high_factor*self.base_factor
 
-"""
-class AdaptiveLossManager(LossManager):
-    def __init__(self, logger, sizes, config):
-        ""
-        config:
-          *base_factor: float(default=1.0)
-          base_metric: str
-          step_factor: float
-          initial_factor: float
-        ""
-        super().__init__(config)
-        self.base_factor = float(config.base_factor) if 'base_factor' in config else 1.0
-        self.base_metric = config.base_metric
-        self.threshold = float(config.threshold)
-        self.step_factor = float(config.step_factor)
-        self.relative_factor = float(config.initial_factor)
-        self.factor = self.base_factor*self.relative_factor
-    def step(self, step, scores):
-        if scores[self.base_metric] > self.threshold:
-            self.relative_factor = min(1.0, self.relative_factor+self.step_factor)
-            self.factor = self.base_factor*self.relative_factor
-"""
 class SigmoidLossManager(LossManager):
     name = 'lossmanager_sigmoid'
     def __init__(self, logger, sizes, input, annealing_step, base_factor=1.0, low_step=0, low_factor=0.0,

@@ -10,15 +10,22 @@ from addict import Dict
 from .utils import check_leftargs
 
 class DataLoader:
-    def __init__(self, logger, datasets, sizes, seed, device, checkpoint=None, **kwargs):
+    def __init__(self, logger, datasets, seed, device, checkpoint=None, **kwargs):
         """
         logger: logger
-        datasets: List[Dict[Dict]]
-            datasets[i_df][data_name] is config for each dataset.
+        datasets: List
+        - dfs:
+            (df_name): dict
+              Input for pd.read_csv
+          datasets:
+            (data_name): dict
+              Input for get_dataset
         seed: int
         checkpoint: str or None
         """
         check_leftargs(self, logger, kwargs)
+        if not isinstance(datasets, list):
+            datasets = [datasets]
         self.dset_configss = datasets
         for dset_config in self.dset_configss:
             for df_config in dset_config.dfs.values():
@@ -46,13 +53,12 @@ class DataLoader:
             with open(f"{checkpoint}/rstate.pkl", 'rb') as f:
                 self.rstate.set_state(pickle.load(f))
         self.load_datasets()
-        for dset in self.cur_dsets.values():
-            dset.get_size(sizes)
     def load_datasets(self):
         del self.cur_dsets
         gc.collect()
         dfs = {}
         for df_name, df_config in self.dset_configss[self.i_dset].dfs.items():
+
             self.logger.info(f"Loading {df_config.filepath_or_buffer} ...")
             dfs[df_name] = pd.read_csv(**df_config)
         self.cur_dsets = {name: get_dataset(logger=self.logger, name=name, dfs=dfs, **dset_config) 
@@ -60,13 +66,15 @@ class DataLoader:
         del dfs
         self.i_cur_dsets = self.i_dset
         
-    def get_batch(self, batch={}):
+    def get_batch(self, batch=None):
         if self.i_cur_dsets != self.i_dset:
             self.load_datasets()
         if self.current_idxs is None:
             self.current_idxs = self.get_idxs(self.cur_dsets)
         idx = self.current_idxs[self.i_current_idx]
+        if batch is None: batch = {}
         batch['idx'] = idx
+        batch['batch_size'] = len(idx)
         for dset in self.cur_dsets.values():
             dset.make_batch(batch, idx, self.device)
         self.i_current_idx += 1
@@ -80,7 +88,7 @@ class DataLoader:
         return batch
     def __iter__(self):
         self.epoch = self.i_dset = self.i_current_idx = 0
-        self.current_idxs = None
+        # self.current_idxs = None
         # shuffleをするかどうか?
         while self.epoch == 0:
             yield self.get_batch()
@@ -199,8 +207,6 @@ class Dataset:
         raise NotImplementedError
     def __len__(self):
         raise NotImplementedError
-    def get_size(self, sizes):
-        raise NotImplementedError
 
 class StringDataset(Dataset):
     def __init__(self, logger, name, dfs, padding_value, list=None, path_list=None,
@@ -239,56 +245,76 @@ class StringDataset(Dataset):
         batch[self.name] = batch_strings.to(device)
     def __len__(self):
         return len(self.str_list)
-    def get_size(self, sizes):
-        sizes[self.name] = ['batch_size', 'length']
-        sizes[self.len_name] = ['batch_size']
 
 class ArrayDataset(Dataset):
-    def __init__(self, logger, name, dfs, dtype, **kwargs):
+    def __init__(self, logger, name, dfs, dtype, atype='torch', **kwargs):
         super().__init__(logger, name, dfs, **kwargs)
-        # check dtype
-        if dtype == 'int': self.dtype=torch.int
-        elif dtype == 'long': self.dtype=torch.long
-        elif dtype == 'float': self.dtype = torch.float
-        else: raise ValueError(f"Unsupported dtype: {dtype}")
+        self.type = atype
+        if self.type in ['numpy', 'np']:
+            self.type = 'numpy'
+        # check dtype  
+        if self.type == 'torch':
+            if dtype == 'int': self.dtype=torch.int
+            elif dtype == 'long': self.dtype=torch.long
+            elif dtype == 'float': self.dtype = torch.float
+            else: raise ValueError(f"Unsupported dtype: {dtype}")
+        elif self.type == 'numpy':
+            if dtype == 'int': self.dtype=int
+            elif dtype == 'float': self.dtype = float
+            else: raise ValueError(f"Unsupported dtype: {dtype}")
+        else:
+            raise ValueError(f"Unsupported atype: {atype}")
         self.array = None
-    def make_batch(self, batch, idx, device):
-        batch[self.name] = self.array[idx].to(device)
+    def make_batch(self, batch, idx, device=None):
+        item = self.array[idx]
+        if device is not None:
+            item = item.to(device)
+        batch[self.name] = item
     def __len__(self):
         return len(self.array)
 
 class NdarrayDataset(ArrayDataset):
-    def __init__(self, logger, name, dfs, dtype, path, cols=None, **kwargs):
-        super().__init__(logger, name, dfs, dtype, **kwargs)
+    def __init__(self, logger, name, dfs, dtype, path, cols=None, atype='torch', **kwargs):
+        super().__init__(logger, name, dfs, dtype, atype, **kwargs)
         ext_path = os.path.splitext(path)[-1][1:]
         if ext_path in ['npy', 'npz']:
-            self.array = torch.tensor(np.load(path), dtype=self.dtype)
+            array = np.load(path)
+            if self.type == 'torch':
+                array = torch.tensor(array)
         elif ext_path in ['pt']:
-            self.array = torch.load(path).to(self.dtype)
+            array = torch.load(path)
+            if self.type == 'numpy':
+                array = array.numpy()
         else:
             raise ValueError(f"Unsupported type of ndarray: {path}")
+        if self.type == 'torch':
+            array = array.to(self.type)
+        else:
+            array = array.astype(self.type)
         if cols is not None:
-            self.array = self.array[:, cols]
+            array = array[:, cols]
+        self.array = array
         self.size = ['batch_size'] + list(self.array.shape[1:])
-    def get_size(self, sizes):
-        sizes[self.name] = self.size
 
 class SeriesDataset(ArrayDataset):
-    def __init__(self, logger, name, dfs, df, col, dtype='int', **kwargs):
-        super().__init__(logger, name, dfs, dtype=dtype, **kwargs)
-        self.array = torch.tensor(dfs[df][col].values, dtype=self.dtype)
-    def get_size(self, sizes):
-        sizes[self.name] = ['batch_size']
+    def __init__(self, logger, name, dfs, 
+        df, dtype, col, atype='torch', **kwargs):
+        super().__init__(logger, name, dfs, dtype, atype, **kwargs)
+        array = dfs[df][col].values
+        if self.type == 'torch':
+            self.array = torch.tensor(array, dtype=self.dtype)
+        elif self.type == 'numpy':
+            self.array = array.astype(self.dtype)
 class DataFrameDataset(ArrayDataset):
-    def __init__(self, logger, name, dfs, df, cols, dtype='int', **kwargs):
-        super().__init__(logger, name, dfs, dtype, **kwargs)
-        
+    def __init__(self, logger, name, dfs,
+        df, dtype, cols=None, atype='torch', **kwargs):
+        super().__init__(logger, name, dfs, dtype, atype, **kwargs)
         if cols is None: cols = dfs[df].columns
         array = dfs[df][cols].values
-        self.array = torch.tensor(array, dtype=self.dtype)
-        self.n_col = self.array.shape[1]
-    def get_size(self, sizes):
-        sizes[self.name] = ['batch_size', self.n_col]
+        if self.type == 'torch':
+            self.array = torch.tensor(array, dtype=self.dtype)
+        elif self.type == 'numpy':
+            self.array = array.astype(self.dtype)
 
 dataset_type2class = {
     'string': StringDataset, 

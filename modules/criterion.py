@@ -1,8 +1,9 @@
+# old version
 import logging
 from functools import partial
 import torch
 import torch.nn as nn
-from .utils import check_leftargs, EMPTY
+from ..utils import check_leftargs, EMPTY
 
 class CECriterion(nn.Module):
     def __init__(self, logger: logging.Logger, 

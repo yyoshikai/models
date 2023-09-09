@@ -174,6 +174,11 @@ def get_scheduler(optimizer, type, last_epoch=-1, **kwargs):
         elif type == 'reciprocal':
             warmup_step = kwargs['warmup']
             schedule = lambda step: ((step+1)/warmup_step)**-0.5
+        elif type == 'noam':
+            # for old Transformer
+            factor = kwargs['d_model']**-0.5
+            wfactor = kwargs['warmup']**-1.5
+            schedule = lambda step: factor*min((step+1)**-0.5, (step+1)*wfactor)
         else:
             raise ValueError(f"Unsupported type of scheduler: {type}")
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=schedule, last_epoch=last_epoch)

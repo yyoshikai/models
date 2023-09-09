@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from ..models2 import module_type2class
 
 class VAE(nn.Module):
     name = 'vae'
@@ -26,3 +27,9 @@ class VAE(nn.Module):
             else:
                 latent = mu
             return latent
+class MinusD_KLLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self, mu, var):
+        return 0.5*(torch.sum(mu**2)+torch.sum(var)-torch.sum(torch.log(var))-var.numel())
+    
