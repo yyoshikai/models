@@ -125,8 +125,12 @@ class NormalDataLoader(DataLoader):
 class BucketDataLoader(DataLoader):
     def __init__(self, logger, device, datasets, seed, bucket_dset, checkpoint=None, 
         bin_linspace=None, bins=None, add_lower_margin=True, add_upper_margin=True,
-        batch_size=None, num_tokens=None, **kwargs):
+        batch_size=None, num_tokens=None, num_tokens_dim=1, **kwargs):
         """
+        num_tokensを指定すると, max_lenに応じてbatch_sizeを変えるようにする。
+        
+        Parameters
+        ----------
         bucket_dset: str
             name of dataset which bucketing is based on.
         bucket_linspace: Optional[tuple(int, int, int)]
@@ -138,6 +142,8 @@ class BucketDataLoader(DataLoader):
         add_upper_margin: bool
         batch_size: Optional[int or List[int]]
         num_tokens: Optional, int
+        num_tokens_dim: Optional, int
+            batch_size*(length**num_tokens_dim) is restricted to num_tokens
         """
         super().__init__(logger=logger, datasets=datasets, seed=seed,
             device=device, checkpoint=checkpoint, **kwargs)
@@ -153,25 +159,29 @@ class BucketDataLoader(DataLoader):
         # calc bucket bins
         if bin_linspace is not None:
             bins = list(np.linspace(*bin_linspace))
-        if add_lower_margin:
+        if add_lower_margin and bins[0] > 0:
             bins.insert(0, 0)
-        if add_upper_margin:
+        if add_upper_margin and bins[-1] < float('inf'):
             bins.append(float('inf'))
         self.bins = bins
         self.n_bucket = len(self.bins) - 1
 
         # calc batch sizes
+        self.num_tokens = num_tokens
+        self.num_tokens_dim = num_tokens_dim
         if batch_size is not None:
             if isinstance(batch_size, list):
                 self.batch_sizes = batch_size
             else:
                 self.batch_sizes = [batch_size]*(len(self.bins)-1)
         else:
-            self.batch_sizes = [int(num_tokens//(np.ceil(sup_len)-1)) for sup_len in self.bins[1:]]
-        if self.batch_sizes[-1] == 0:
-            logger.warning("batch_size[-1] is 0. This occurs when add_upper_margin is True and num_tokens is specified.")
+            self.batch_sizes = [int(num_tokens//(np.ceil(sup_len)-1)**num_tokens_dim) for sup_len in self.bins[1:]]
     def get_idxs(self, dsets):
-        ibs = np.digitize(dsets[self.bucket_dset].lengths, self.bins) - 1
+        lengths = dsets[self.bucket_dset].lengths
+        ibs = np.digitize(lengths, self.bins) - 1
+        batch_sizes = self.batch_sizes
+        if self.num_tokens is not None and self.bins[-1] == float('inf'):
+            batch_sizes[-1] = int(self.num_tokens//torch.max(lengths).item()**self.num_tokens_dim)
         idxs = []
         for ib, batch_size in enumerate(self.batch_sizes):
             bucket_idxs = np.where(ibs == ib)[0]
@@ -208,9 +218,33 @@ class Dataset:
     def __len__(self):
         raise NotImplementedError
 
+torch_name2dtype = {
+    'int': torch.int,
+    'long': torch.long,
+    'float': torch.float,
+}
+numpy_name2dtype = {
+    'int': int,
+    'float': float,
+}
 class StringDataset(Dataset):
     def __init__(self, logger, name, dfs, padding_value, list=None, path_list=None,
-            len_name=None, **kwargs):
+            len_name=None, shape=[], dtype='long', dim=1, **kwargs):
+        """
+        Parameters
+        ----------
+        padding_value(int): Pad token.
+        list(list): List of raw dataset.
+        path_list(str): Path to pickle file of list.
+            Either 'list' or 'path_list' must be specified.
+        len_name(Optional, str): Name of string length in batch
+        shape(list of int): Additional shape of each datapoint.
+        dtype(str): Name of dtype. Must be in torch_name2dtype
+        dim: Dimension of variable length. 
+
+        
+        Shape of each data in list should be [length, ...(dim), length, *shape] 
+        """
         super().__init__(logger, name, dfs, **kwargs)
         logger.info(f"Loading {name}...")
         if (list is None) == (path_list is None):
@@ -229,6 +263,9 @@ class StringDataset(Dataset):
                 raise ValueError(f"Unsupported type of path_list: {path_list}")
         self.lengths = torch.tensor([len(string) for string in self.str_list], 
             dtype=torch.long)
+        self.shape = tuple(shape)
+        self.dtype = torch_name2dtype[dtype]
+        self.dim = dim
         logger.info(f"Max length of {name}: {torch.max(self.lengths)}")
 
         # Other settings
@@ -238,10 +275,10 @@ class StringDataset(Dataset):
         n = len(idx)
         batch_lengths = self.lengths[idx].to(device)
         batch[self.len_name] = batch_lengths
-        batch_strings = torch.full((n, torch.max(batch_lengths)), fill_value=self.padding_value,
-            dtype=torch.long)
+        batch_strings = torch.full((n, )+(torch.max(batch_lengths), )*self.dim+self.shape,
+            fill_value=self.padding_value, dtype=self.dtype)
         for i, idx in enumerate(idx):
-            batch_strings[i, :batch_lengths[i]] = torch.tensor(self.str_list[idx], dtype=torch.long)
+            batch_strings[(i, )+(slice(batch_lengths[i]), )*self.dim] = torch.tensor(self.str_list[idx], dtype=self.dtype)
         batch[self.name] = batch_strings.to(device)
     def __len__(self):
         return len(self.str_list)
@@ -254,14 +291,9 @@ class ArrayDataset(Dataset):
             self.type = 'numpy'
         # check dtype  
         if self.type == 'torch':
-            if dtype == 'int': self.dtype=torch.int
-            elif dtype == 'long': self.dtype=torch.long
-            elif dtype == 'float': self.dtype = torch.float
-            else: raise ValueError(f"Unsupported dtype: {dtype}")
+            self.dtype = torch_name2dtype[dtype]
         elif self.type == 'numpy':
-            if dtype == 'int': self.dtype=int
-            elif dtype == 'float': self.dtype = float
-            else: raise ValueError(f"Unsupported dtype: {dtype}")
+            self.dtype = numpy_name2dtype[dtype]
         else:
             raise ValueError(f"Unsupported atype: {atype}")
         self.array = None
