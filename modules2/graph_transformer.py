@@ -15,7 +15,7 @@ class GraphAttention(nn.Module):
         assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
         self.in_proj = nn.Linear(embed_dim, 3*embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True)
-        self.edge_embedding = nn.Embedding(edge_voc_size, num_heads, padding_dx=edge_pad_token)
+        self.edge_embedding = nn.Embedding(edge_voc_size, num_heads, padding_idx=edge_pad_token)
 
     def forward(self, x: torch.Tensor, edge: torch.Tensor,
                 key_padding_mask = None,
@@ -62,9 +62,13 @@ class GraphAttention(nn.Module):
         attn_weights = torch.bmm(q, k.transpose(-2, -1))
         if attn_mask is not None:
             attn_weights += attn_mask
+
+        """Attention weight check
         fig, ax = plt.subplots(1,1,figsize=(7,5))
         ax.hist(attn_weights.detach().cpu().numpy().ravel(), bins=np.linspace(-2, 2, 21))
         ax.hist(edge.detach().cpu().numpy().ravel(), bins=np.linspace(-2, 2, 21), alpha=0.5)
+        """
+        
         attn_weights += edge
         
         attn_weights = F.softmax(attn_weights, dim=-1)
@@ -77,10 +81,10 @@ class GraphAttention(nn.Module):
 
         return attn_output
 
-class Layer(nn.Module):
-    def __init__(self, d_model: int, nhead: int, edge_voc_size, dim_feedforward: int = 2048, dropout: float = 0.1):
+class GraphAttentionLayer(nn.Module):
+    def __init__(self, d_model: int, nhead: int, edge_voc_size, edge_pad_token, dim_feedforward: int = 2048, dropout: float = 0.1):
         super().__init__()
-        self.self_attn = GraphAttention(d_model, nhead, edge_voc_size, dropout=dropout)
+        self.self_attn = GraphAttention(d_model, nhead, edge_voc_size, edge_pad_token=edge_pad_token, dropout=dropout)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
@@ -108,7 +112,7 @@ class Layer(nn.Module):
 class GraphEncoder(nn.Module):
     def __init__(self, layer, n_layer, norm=None, init=dict()):
         """
-        TransformerEncoderとほぼ同じ。
+        パラメータはTransformerEncoderとほぼ同じ。
         
         Parameters
         ----------
@@ -122,7 +126,7 @@ class GraphEncoder(nn.Module):
         """
         super().__init__()
         d_model = layer['d_model']
-        self.layers = nn.ModuleList([Layer(**layer) 
+        self.layers = nn.ModuleList([GraphAttentionLayer(**layer) 
             for i in range(n_layer)])
         if norm is not None:
             self.norm = nn.LayerNorm(normalized_shape=d_model, **norm)
@@ -148,7 +152,7 @@ class GraphEncoder(nn.Module):
 
         Returns
         -------
-        output(torch.tensor(float))[batch_size, node_size, embed_size]:
+        output(torch.tensor(float))[node_size, batch_size, embed_size]:
             Output of encoder
         """
         output = nodes.transpose(0, 1)
@@ -156,5 +160,41 @@ class GraphEncoder(nn.Module):
             output = layer(output, bonds, src_mask=None, src_key_padding_mask=node_padding_mask)
         if self.norm is not None:
             output = self.norm(output)
-        output = output.transpose(0, 1)
         return output
+
+class AtomEmbedding(nn.Module):
+    def __init__(self, output_size, atom_token_size, atom_pad_token=0, 
+            chiral_token_size=4, chiral_pad_token=0):
+        super().__init__()
+        self.atom_type_embedding = nn.Embedding(num_embeddings=atom_token_size,
+            embedding_dim=output_size, padding_idx=atom_pad_token, )
+        self.chiral_embedding = nn.Embedding(num_embeddings=chiral_token_size, 
+            embedding_dim=output_size, padding_idx=chiral_pad_token,)
+        self.coord_embedding = nn.Linear(3, output_size)
+        pass
+
+    def forward(self, atom_types, chirals, coordinates):
+        """
+        Parameters
+        ----------
+        atom_types(long)[batch_size, length]:
+        chirals(long)[batch_size, length]
+        coordinates(float)[batch_size, 3]        
+        """
+        atom_types = self.atom_type_embedding(atom_types)
+        chirals = self.chiral_embedding(chirals)
+        coordinates = self.coord_embedding(coordinates)
+
+        """check weight distribution
+        fig, ax = plt.subplots(1,1,figsize=(7,5))
+        for i, (name, var) in enumerate(zip(['atom type', 'chiral', 'coordinates'],
+                [atom_types, chirals, coordinates])):
+            counts = np.histogram(var.detach().cpu().numpy().ravel(), range=(-5, 5), bins=20)[0]
+            ax.bar(np.arange(-5, 5, 0.5)+(i+0.5)/6, counts, label=name, width=1/6)
+        ax.legend()
+        """
+        return atom_types+chirals+coordinates
+
+
+
+
