@@ -246,7 +246,6 @@ class StringDataset(Dataset):
         Shape of each data in list should be [length, ...(dim), length, *shape] 
         """
         super().__init__(logger, name, dfs, **kwargs)
-        logger.info(f"Loading {name}...")
         if (list is None) == (path_list is None):
             raise ValueError(f"Either list({list}) XOR path_list({path_list}) has to be specified.")
         self.len_name = len_name or f"{self.name}_len"
@@ -254,13 +253,9 @@ class StringDataset(Dataset):
         if list is not None:
             self.str_list = list
         else:
-            ext = os.path.splitext(path_list)[1]
-            logger.info(f"Loading {path_list} ...") 
-            if ext == '.pkl':
-                with open(path_list, 'rb') as f:
-                    self.str_list = pickle.load(f)
-            else:
-                raise ValueError(f"Unsupported type of path_list: {path_list}")
+            logger.info(f"Loading {path_list} ...")
+            with open(path_list, 'rb') as f:
+                self.str_list = pickle.load(f)
         self.lengths = torch.tensor([len(string) for string in self.str_list], 
             dtype=torch.long)
         self.shape = tuple(shape)
@@ -348,11 +343,77 @@ class DataFrameDataset(ArrayDataset):
         elif self.type == 'numpy':
             self.array = array.astype(self.dtype)
 
+class SparseSquareDataset(Dataset):
+    def __init__(self, logger, name, dfs, padding_value, path_length,
+        path_index, path_value, len_name=None, dtype=None, **kwargs):
+        super().__init__(logger, name, dfs, **kwargs)
+        """
+        Parameters
+        ----------
+        padding_value(int): Pad token.
+        path_length(str): Path to pickle or npy file or of list of length of each square.
+            File data shuld be list(int) or np.ndarray(int)[]
+        path_index(str): path to pickle file of list of 
+            File data should be list(np.ndarray[n_entry, 2])
+        path_value(str): Path to pickle file of list
+            File data should be list(np.ndarray[n_entry])
+        """
+        self.len_name = len_name or f"{self.name}_len"
+        
+        ext = os.path.splitext(path_length)[1]
+        if ext == '.npy':
+            self.lengths = torch.tensor(np.load(path_length), dtype=torch.long)
+        elif ext == '.pkl':
+            with open(path_length, 'rb') as f:
+                self.lengths = torch.tensor(pickle.load(f), dtype=torch.long)
+        else:
+            raise ValueError(f"Unsupported type of path_length: {path_length}")
+        with open(path_index, 'rb') as f:
+            self.indices = pickle.load(f)
+        with open(path_value, 'rb') as f:
+            self.values = pickle.load(f)
+        self.padding_value = padding_value
+        if dtype is not None:
+            self.dtype = torch_name2dtype[dtype]
+        else:
+            self.dtype = None
+    def make_batch(self, batch, idx, device):
+        batch_size = len(idx)
+        lengths = self.lengths[idx].to(device)
+        batch[self.len_name] = lengths
+        max_len = torch.max(lengths)
+        ibatches = []
+        indices = []
+        values = []
+        for i, idx in enumerate(idx):
+            index = torch.tensor(self.indices[idx], dtype=torch.int, device=device) # [n_edge, 2]
+            indices.append(index)
+            ibatches.append(torch.full((index.shape[0], ), fill_value=i, dtype=torch.int, device=device))
+            values.append(torch.tensor(self.values[idx], dtype=self.dtype, device=device))
+        ibatches = torch.cat(ibatches, dim=0)
+        indices = torch.cat(indices, dim=0).T # [2, n_edges]
+        indices = torch.cat([ibatches.unsqueeze(0), indices], dim=0)
+        values = torch.cat(values, dim=0)
+        data = torch.sparse_coo_tensor(indices, values, size=(batch_size, max_len, max_len)).to_dense()
+        batch[self.name] = data
+
+    def __len__(self):
+        return len(self.lengths)
+
+
+        
+
+
+
+
+
+
 dataset_type2class = {
     'string': StringDataset, 
     'ndarray': NdarrayDataset,
     'series': SeriesDataset,
-    'dataframe': DataFrameDataset
+    'dataframe': DataFrameDataset,
+    'sparse_square': SparseSquareDataset,
 }
 def get_dataset(type, **kwargs):
     return dataset_type2class[type](**kwargs)

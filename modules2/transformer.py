@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch.nn.modules.linear import NonDynamicallyQuantizableLinear
 
 class MultiheadAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, dropout=0., add_zero_attn=False, device=None, dtype=None) -> None:
+    def __init__(self, embed_dim, num_heads, dropout=0., add_zero_attn=False, device=None, dtype=None):
         factory_kwargs = {'device': device, 'dtype': dtype}
         super().__init__()
         self.num_heads = num_heads
@@ -58,8 +58,6 @@ class MultiheadAttention(nn.Module):
         src_len = k.size(1)
 
         if key_padding_mask is not None:
-            assert key_padding_mask.shape == (bsz, src_len), \
-                f"expecting key_padding_mask shape of {(bsz, src_len)}, but got {key_padding_mask.shape}"
             key_padding_mask = key_padding_mask.view(bsz, 1, 1, src_len).   \
                 expand(-1, num_heads, -1, -1).reshape(bsz * num_heads, 1, src_len)
             if attn_mask is None:
@@ -132,19 +130,22 @@ if __name__ == '__main__':
     n_layer = 2
 
     x = torch.rand((length, batch_size, d_model))
-    mask = torch.randint(0, 10, (batch_size, length)) != 0
+    attn_mask = torch.nn.Transformer.generate_square_subsequent_mask(sz=length)
+    padding_mask = torch.randint(0, 10, (batch_size, length)) != 0
 
     layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=d_ff, dropout=dropout, norm_first=True)
 
     m0 = nn.TransformerEncoder(layer, num_layers=n_layer)
     m0.eval()
-    y0 = m0(x, src_key_padding_mask=mask)
+    y0 = m0(x, mask=attn_mask, src_key_padding_mask=padding_mask)
 
     layer = Layer(d_model=d_model, nhead=nhead, dim_feedforward=d_ff, dropout=dropout)
     m1 = nn.TransformerEncoder(layer, num_layers=n_layer)
     m1.load_state_dict(m0.state_dict())
     m1.eval()
-    y1 = m1(x, src_key_padding_mask = mask)
+    y1 = m1(x, mask=attn_mask, src_key_padding_mask = padding_mask)
 
-    plt.scatter(y0.detach().cpu().numpy().ravel(), y1.detach().cpu().numpy().ravel(), s=5)
-    plt.plot([-4, 4], [-4, 4], color='black', zorder=-1)
+    fig, ax = plt.subplots(1,1,figsize=(5,5))
+    ax.scatter(y0.detach().cpu().numpy().ravel(), y1.detach().cpu().numpy().ravel(), s=5)
+    ax.plot([-4, 4], [-4, 4], color='black', zorder=-1)
+    fig.savefig("comparison.png")
