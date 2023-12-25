@@ -132,7 +132,10 @@ class MeanMetric(Metric):
     def calc(self, scores):
         total_values = []
         for val_name, values in self.scores.items():
-            values = np.concatenate(values)
+            if values[0].ndim == 0:
+                values = np.array(values)
+            else:
+                values = np.concatenate(values)
             if len(self.scores) > 1:
                 scores[f"{val_name}_{self.name}"] = np.mean(values)
             total_values.append(values)
@@ -177,5 +180,5 @@ metric_type2class = {
     'perfect': PerfectAccuracyMetric,
     'partial': PartialAccuracyMetric,
 }
-def get_metric(type, **kwargs):
+def get_metric(type, **kwargs) -> Metric:
     return metric_type2class[type](**kwargs)

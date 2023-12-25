@@ -1,4 +1,4 @@
-from .models2 import function_config2func
+from .models2 import function_config2func, PRINT_PROCESS
 class Process:
     def __init__(self):
         pass
@@ -16,7 +16,7 @@ class CallProcess(Process):
         callable_ = self.get_callable(model)
         if self.input is None:
             output = callable_(**self.kwargs)
-        if isinstance(self.input, str):
+        elif isinstance(self.input, str):
             output = callable_(batch[self.input], **self.kwargs)
         elif isinstance(self.input, list):
             output = callable_(*[batch[i] for i in self.input], **self.kwargs)
@@ -79,8 +79,8 @@ class IterateProcess(Process):
         """
         Parameters
         ----------
-        length: str
-            Name of length of iteration in batch.
+        length: int | str
+            Length of iteration | name of it in batch.
         processes: list[dict]
             Parameters for processes to iterate
         i_name: str
@@ -90,9 +90,22 @@ class IterateProcess(Process):
         self.processes = [get_process(**process) for process in processes]
         self.i_name = i_name
     def __call__(self, model, batch):
-        for i in range(batch[self.length]):
+        if isinstance(self.length, int): length = self.length
+        else: length = batch[self.length]
+        for i in range(length):
             batch[self.i_name] = i
             for i, process in enumerate(self.processes):
+
+                if PRINT_PROCESS:
+                    # Show parameters
+                    print(f"---process {i}---")
+                    for key, value in batch.items():
+                        if isinstance(value, (torch.Tensor, np.ndarray)):
+                            print(f"  {key}: {list(value.shape)}")
+                        else:
+                            print(f"  {key}: {type(value).__name__}")
+                
+
                 process(model, batch)
 
 process_type2class = {

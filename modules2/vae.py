@@ -12,15 +12,27 @@ class VAE(nn.Module):
         super().__init__()
         self.var_coef = var_coef
         self.eval_vae = eval_vae
+
+        # Add _device_param
+        self._device_param = nn.Parameter(torch.zeros((0,)))
+        def hook(model, state_dict, prefix, local_metadata, strict,
+                missing_keys, unexpected_keys, error_msgs):
+            if prefix+'_device_param' not in state_dict:
+                state_dict[prefix+'_device_param'] = model._device_param
+        self._register_load_state_dict_pre_hook(hook, with_module=True)
+
+    @property
+    def device(self):
+        return self._device_param.device
         
-    def forward(self, mode='train', mu=None, var=None, latent_size=None, device=None):
+    def forward(self, mode='train', mu=None, var=None, latent_size=None, batch_size=None):
         """
         Parameters
         ----------
         mode: Either 'train', 'eval' or 'generate'
         """
         if mode == 'generate':
-            return torch.randn(size=latent_size, device=device)
+            return torch.randn(size=(batch_size, latent_size), device=self.device)
         else:
             if mode == 'train' or self.eval_vae:
                 latent = mu + torch.randn(*mu.shape, device=mu.device)*torch.sqrt(var)*self.var_coef

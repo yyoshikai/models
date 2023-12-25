@@ -1,0 +1,52 @@
+type: reg
+model: XGBRegressor
+params: 
+  eta:
+    type: float
+    suggest_type: float
+    low: 1.0e-8
+    high: 10.0
+    log: True
+  gamma:
+    type: float
+    suggest_type: float
+    low: 1.0e-8
+    high: 1.0
+    log: True
+  max_depth:
+    type: int
+    suggest_type: int
+    low: 3
+    high: 15 
+  min_child_weight:
+    type: int
+    suggest_type: int
+    low: 1
+    high: 10
+  max_delta_step:
+    type: int
+    suggest_type: int
+    low: 1
+    high: 10
+  subsample:
+    type: float
+    suggest_type: float
+    low: 0.6
+    high: 1.0
+  colsample_bytree:
+    type: float
+    suggest_type: float
+    low: 0.6
+    high: 1.0
+  lambda:
+    type: float
+    suggest_type: float
+    low: 1.0e-8
+    high: 0.1
+    log: True
+  alpha:
+    type: float
+    suggest_type: float
+    low: 1.0e-8
+    high: 1.0
+    log: True

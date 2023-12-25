@@ -37,9 +37,9 @@ class SaveAlarmHook(AlarmHook):
 
 class AccumulateHook:
     def __init__(self, logger, result_dir, names, cols, save_alarm,
-            checkpoint=None):
+            checkpoint=None, fname='steps'):
         os.makedirs(result_dir, exist_ok=True)
-        self.path_df = result_dir+"/steps.csv"
+        self.path_df = result_dir+f"/{fname}.csv"
         self.save_alarm = get_alarm(logger=logger, **save_alarm)
         self.dfs = []
         if checkpoint is not None:

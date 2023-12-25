@@ -2,7 +2,6 @@ import sys, os
 """ver 12 - 4
 ・共通のModelを使うように変更
 ・train, valは必ず複数セット
-・train, valのiterは
 """
 
 os.environ.setdefault("TOOLS_DIR", "/workspace")
@@ -23,15 +22,15 @@ from tools.notice import notice, noticeerror
 from tools.path import make_result_dir, timestamp
 from tools.logger import default_logger
 from tools.args import load_config2, subs_vars
+from tools.torch import get_params
 from models.dataset import get_dataloader
-from models.accumulator import get_accumulator
+from models.accumulator import get_accumulator, NumpyAccumulator
 from models.metric import get_metric
 from models.optimizer import get_optimizer, get_scheduler
 from models.process import get_process
 from tools.tools import nullcontext
 from models.hooks import AlarmHook, hook_type2class, get_hook
 from models import Model
-torch.autograd.set_detect_anomaly(True)
 
 def save_rstate(dirname):
     os.makedirs(dirname, exist_ok=True)
@@ -54,11 +53,17 @@ def set_rstate(config):
         torch.cuda.set_rng_state_all(torch.load(config.cuda))
 
 class NoticeAlarmHook(AlarmHook):
+    def __init__(self, logger, studyname=None, **kwargs):
+        super().__init__(logger=logger, **kwargs)
+        if studyname is None:
+            logger.warning("studyname not specified in NoticeAlarm.")
+            studyname =  "(study noname)"
+        self.studyname = studyname
     def ring(self, batch, model):
         if 'end' in batch:
-            notice(f"LatnetTransformer: study finished!")
+            notice(f"models/train: {self.studyname} finished!")
         else:
-            message = "From LatentTransformer/training: "
+            message = f"models/train: {self.studyname} "
             for alarm in self.alarms:
                 message += f"{alarm.target} {batch[alarm.target]} "
             message += "finished!"
@@ -79,23 +84,44 @@ def main(config, args=None):
     if args is not None:
         logger.warning(f"options: {' '.join(args)}")
 
-    # prepare data
+    # environment
     ## device
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    DEVICE = torch.device('cuda', index=trconfig.gpuid or 0) \
+        if torch.cuda.is_available() else torch.device('cpu')
     logger.warning(f"DEVICE: {DEVICE}")
-    ## dataset
+    ## detect anomaly
+    if trconfig.detect_anomaly:
+        torch.autograd.set_detect_anomaly(True)
+    ## deterministic
+    if trconfig.deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.use_deterministic_algorithms = True
+        torch.backends.cudnn.benchmark = False
+    
+    # prepare data
     dl_train = get_dataloader(logger=logger, device=DEVICE, **trconfig.data.train)
     dls_val = {name: get_dataloader(logger=logger, device=DEVICE, **dl_val_config)
         for name, dl_val_config in trconfig.data.vals.items()}
     
     # prepare model
+    if 'model_seed' in trconfig:
+        random.seed(trconfig.model_seed)
+        np.random.seed(trconfig.model_seed)
+        torch.manual_seed(trconfig.model_seed)
+        torch.cuda.manual_seed(trconfig.model_seed)
     model = Model(logger=logger, **config.model)
     if trconfig.init_weight:
         model.load(**trconfig.init_weight)
+    
+    df_param, n_param, bit_size = get_params(model)
+    df_param.to_csv(f"{result_dir}/parameters.tsv", sep='\t', index=False)
+    logger.info(f"# of params: {n_param}")
+    logger.info(f"Model size(bit): {bit_size}")
     model.to(DEVICE)
     optimizer = get_optimizer(params=model.parameters(), **trconfig.optimizer)
     if trconfig.optimizer_init_weight:
         optimizer.load_state_dict(torch.load(trconfig.optimizer_init_weight))
+    train_processes = [get_process(**process) for process in trconfig.train_loop]
     class SchedulerAlarmHook(AlarmHook):
         def __init__(self, scheduler, **kwargs):
             super().__init__(**kwargs)
@@ -112,12 +138,13 @@ def main(config, args=None):
 
     # Prepare metrics
     accumulators = [ get_accumulator(logger=logger, **acc_config) for acc_config in trconfig.accumulators ]
+    idx_accumulator = NumpyAccumulator(logger, input='idx', org_type='numpy')
     metrics = [ get_metric(logger=logger, name=name, **met_config) for name, met_config in trconfig.metrics.items() ]
     scores_df = pd.read_csv(trconfig.stocks.score_df, index_col="Step") \
         if trconfig.stocks.score_df else  pd.DataFrame(columns=[], dtype=float)
     val_processes = [get_process(**process) for process in trconfig.val_loop]
-    print("^^^metrics---")
-    print(metrics)
+    if trconfig.val_loop_add_train: 
+        val_processes = train_processes + val_processes
     class ValidationAlarmHook(AlarmHook):
         eval_steps = []
         def ring(self, batch, model):
@@ -126,14 +153,14 @@ def main(config, args=None):
             self.logger.info(f"Validating step{step:7} ...")
             model.eval()
             ## evaluation
-            for x in metrics + accumulators: x.init()
+            for x in metrics+accumulators+[idx_accumulator]: x.init()
             with torch.no_grad():
                 for key, dl in dls_val.items():
                     for metric in metrics:
                         metric.set_val_name(key)
                     for batch0 in dl:
                         batch0 = model(batch0, processes=val_processes)
-                        for x in metrics+accumulators:
+                        for x in metrics+accumulators+[idx_accumulator]:
                             x(batch0)
                         del batch0
                         torch.cuda.empty_cache()
@@ -148,8 +175,10 @@ def main(config, args=None):
             scores_df.to_csv(result_dir+"/val_score.csv", index_label="Step")
 
             ## save accumulated
+            idx = idx_accumulator.accumulate()
+            idx = np.argsort(idx)
             for accumulator in accumulators:
-                accumulator.save(f"{result_dir}/accumulates/{accumulator.input}/{step}")
+                accumulator.save(f"{result_dir}/accumulates/{accumulator.input}/{step}", indices=idx)
             
             ## save steps
             self.eval_steps.append(step)
@@ -179,20 +208,18 @@ def main(config, args=None):
     hook_type2class['checkpoint_alarm'] = CheckpointAlarm
     pre_hooks = [get_hook(logger=logger, result_dir=result_dir, **hconfig) for hconfig in trconfig.pre_hooks.values()]
     post_hooks = [get_hook(logger=logger, result_dir=result_dir, **hconfig) for hconfig in trconfig.post_hooks.values()]
+
     # load random state
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
     set_rstate(trconfig.rstate)
 
     # training
-    train_processes = [get_process(**process) for process in trconfig.train_loop]
     training_start = time.time()
     logger.info("Training started.")
-    with (tqdm(total=abort_step if abort_step < float('inf') else None,
-            desc=None, initial=dl_train.step) if trconfig.verbose.show_tqdm else nullcontext()) as pbar:
+    with (tqdm(total=None, initial=dl_train.step) if trconfig.verbose.show_tqdm else nullcontext()) as pbar:
         now = time.time()
         optimizer.zero_grad()
         while True:
+
             batch = {'step': dl_train.step, 'epoch': dl_train.epoch}
             for hook in pre_hooks:
                 hook(batch, model)
@@ -207,20 +234,50 @@ def main(config, args=None):
 
             # training
             batch = dl_train.get_batch(batch)
+            logger.log(level=5, msg=f"step {batch['step']}: batch size={batch['batch_size']}") # for debug
             start = time.time()
             batch = model(batch, processes=train_processes)
             loss = sum(batch[loss_name] for loss_name in trconfig.loss_names)
             if trconfig.regularize_loss.normalize:
                 loss = loss / loss.detach()
-            loss.backward()
+            try:
+                loss.backward()
+            except Exception as e:
+                os.makedirs(f"{result_dir}/error/batch", exist_ok=True)
+                for key, value in batch.items():
+                    if isinstance(value, torch.Tensor):
+                        torch.save(value, f"{result_dir}/error/batch/{key}.pt")
+                    else:
+                        with open(f"{result_dir}/error/batch/{key}.pkl", 'wb') as f:
+                            pickle.dump(value, f)
+                model.save_state_dict(f"{result_dir}/error/model")
+                raise e
+
+            # test: see gradients
+            grad_max = grad_min = 0
+            grad_mean = 0
+            grad_numel = 0
+            for p in model.parameters():
+                if p.grad is None: continue
+                grad_mean += torch.sum(p.grad**2)
+                grad_numel += p.grad.numel()
+                grad_max = max(grad_max, p.grad.max().item())
+                grad_min = min(grad_min, p.grad.min().item())
+            batch['grad_mean'] = grad_mean / grad_numel if grad_numel > 0 else 0.
+            batch['grad_max'] = grad_max
+            batch['grad_min'] = grad_min
+            
             if trconfig.regularize_loss.clip_grad_norm:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 
                 max_norm=trconfig.regularize_loss.clip_grad_norm, error_if_nonfinite=True)
+            if trconfig.regularize_loss.clip_grad_value:
+                torch.nn.utils.clip_grad_value_(model.parameters(),
+                clip_value=trconfig.regularize_loss.clip_grad_value)
             if dl_train.step % trconfig.schedule.opt_freq == 0:
                 optimizer.step()
                 optimizer.zero_grad()
             batch['time'] = time.time() - start
-
+                
             for hook in post_hooks:
                 hook(batch, model)
             del batch, loss

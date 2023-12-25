@@ -25,12 +25,16 @@ class NumpyAccumulator:
         self.batch_dim = batch_dim
     def init(self):
         self.accums = []
-    def accumulate(self):
-        return np.concatenate(self.accums, axis=self.batch_dim)
-    def save(self, path_without_ext):
+    def accumulate(self, indices=None):
+        accums = np.concatenate(self.accums, axis=self.batch_dim)
+        if indices is not None:
+            accums = accums[indices]
+        return accums
+        
+    def save(self, path_without_ext, indices=None):
         path = path_without_ext + ".npy"
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        np.save(path, self.accumulate())
+        np.save(path, self.accumulate(indices=indices))
     def __call__(self, batch):
         self.accums.append(self.converter(batch[self.input]))
 class ListAccumulator:
@@ -61,13 +65,17 @@ class ListAccumulator:
                     self.converter = lambda x: list(x.swapaxes(0, batch_dim))
     def init(self):
         self.accums = []
-    def accumulate(self):
-        return self.accums
-    def save(self, path_without_ext):
+    def accumulate(self, indices=None):
+        if indices is not None:
+            accums = np.array(self.accums, dtype=object)
+            return accums[indices].tolist()
+        else:
+            return self.accums
+    def save(self, path_without_ext, indices=None):
         path = path_without_ext + '.pkl'
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(f"{path_without_ext}.pkl", 'wb') as f:
-            pickle.dump(self.accums, f)
+            pickle.dump(self.accumulate(indices=indices), f)
     def __call__(self, batch):
         self.accums += self.converter(batch[self.input])
 

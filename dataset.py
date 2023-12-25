@@ -1,5 +1,6 @@
 import sys, os
 import inspect
+import itertools
 import yaml
 import gc
 import pickle
@@ -71,12 +72,12 @@ class DataLoader:
             self.load_datasets()
         if self.current_idxs is None:
             self.current_idxs = self.get_idxs(self.cur_dsets)
-        idx = self.current_idxs[self.i_current_idx]
+        idx = self.current_idxs[self.i_current_idx].astype(int)
         if batch is None: batch = {}
         batch['idx'] = idx
-        batch['batch_size'] = len(idx)
         for dset in self.cur_dsets.values():
             dset.make_batch(batch, idx, self.device)
+        batch['batch_size'] = len(batch['idx'])
         self.i_current_idx += 1
         self.step += 1
         if self.i_current_idx == len(self.current_idxs):
@@ -114,6 +115,7 @@ class NormalDataLoader(DataLoader):
         super().__init__(logger=logger, datasets=datasets, seed=seed,
             device=device, checkpoint=checkpoint, **kwargs)
         self.batch_size = batch_size
+        if not isinstance(datasets, list): datasets = [datasets]
         self.dset_name0 = list(datasets[0].datasets.keys())[0]
     def get_idxs(self, dsets):
         dset_size = len(dsets[self.dset_name0])
@@ -125,7 +127,7 @@ class NormalDataLoader(DataLoader):
 class BucketDataLoader(DataLoader):
     def __init__(self, logger, device, datasets, seed, bucket_dset, checkpoint=None, 
         bin_linspace=None, bins=None, add_lower_margin=True, add_upper_margin=True,
-        batch_size=None, num_tokens=None, num_tokens_dim=1, **kwargs):
+        batch_size=None, num_tokens=None, num_tokens_dim=None, max_batch_size=None, **kwargs):
         """
         num_tokensを指定すると, max_lenに応じてbatch_sizeを変えるようにする。
         
@@ -141,6 +143,7 @@ class BucketDataLoader(DataLoader):
         add_lower_margin: bool
         add_upper_margin: bool
         batch_size: Optional[int or List[int]]
+
         num_tokens: Optional, int
         num_tokens_dim: Optional, int
             batch_size*(length**num_tokens_dim) is restricted to num_tokens
@@ -152,16 +155,22 @@ class BucketDataLoader(DataLoader):
             raise ValueError(f"Either bin_linspace({bin_linspace}) XOR bins({bins}) must be specified")
         if (batch_size is None) == (num_tokens is None):
             raise ValueError(f"Either batch_size({batch_size}) XOR num_tokens({num_tokens}) must be specified.")
-        
+        if batch_size is not None:
+            assert num_tokens_dim is None, "When batch size is specified, num_tokens_dim must not be specified."
+            assert max_batch_size is None, "When batch size is specified, max_batch_size must not be specified."
+        else:
+            if num_tokens_dim is None: num_tokens_dim = 1
+            if max_batch_size is None: max_batch_size = float('inf')
+
         self.buckets = [None]*len(self.dset_configss)
         self.bucket_dset = bucket_dset
 
         # calc bucket bins
         if bin_linspace is not None:
             bins = list(np.linspace(*bin_linspace))
-        if add_lower_margin and bins[0] > 0:
+        if add_lower_margin and (len(bins) == 0 or bins[0] > 0):
             bins.insert(0, 0)
-        if add_upper_margin and bins[-1] < float('inf'):
+        if add_upper_margin and (len(bins) == 0 or bins[-1] < float('inf')):
             bins.append(float('inf'))
         self.bins = bins
         self.n_bucket = len(self.bins) - 1
@@ -171,13 +180,17 @@ class BucketDataLoader(DataLoader):
         self.num_tokens_dim = num_tokens_dim
         if batch_size is not None:
             if isinstance(batch_size, list):
+                assert len(batch_size) == self.n_bucket
                 self.batch_sizes = batch_size
             else:
                 self.batch_sizes = [batch_size]*(len(self.bins)-1)
         else:
-            self.batch_sizes = [int(num_tokens//(np.ceil(sup_len)-1)**num_tokens_dim) for sup_len in self.bins[1:]]
+            self.batch_sizes = [min(int(num_tokens//(np.ceil(sup_len)-1)**num_tokens_dim), max_batch_size)
+                 for sup_len in self.bins[1:]]
     def get_idxs(self, dsets):
         lengths = dsets[self.bucket_dset].lengths
+        max_len = torch.max(lengths)
+        amax = torch.argmax(lengths)
         ibs = np.digitize(lengths, self.bins) - 1
         batch_sizes = self.batch_sizes
         if self.num_tokens is not None and self.bins[-1] == float('inf'):
@@ -218,18 +231,34 @@ class Dataset:
     def __len__(self):
         raise NotImplementedError
 
+    def calc_split(self, dfs, df, col, idx=None):
+        split: np.ndarray = dfs[df][col].values
+        if idx is not None:
+            if isinstance(idx, list):
+                idx = set(idx)
+                split = np.frompyfunc(lambda x: x in idx, nin=1, nout=1)(split).astype(bool)
+            else:
+                split = split == idx
+        else:
+            split = split.astype(bool)
+        return split
+
+
 torch_name2dtype = {
     'int': torch.int,
     'long': torch.long,
     'float': torch.float,
+    'bool': torch.bool,
 }
 numpy_name2dtype = {
     'int': int,
     'float': float,
+    'bool': bool,
 }
 class StringDataset(Dataset):
-    def __init__(self, logger, name, dfs, padding_value, list=None, path_list=None,
-            len_name=None, shape=[], dtype='long', dim=1, **kwargs):
+    def __init__(self, logger, name, dfs, 
+            padding_value, list=None, path_list=None,
+            len_name=None, shape=[], dtype='long', dim=1, split=None, **kwargs):
         """
         Parameters
         ----------
@@ -241,7 +270,8 @@ class StringDataset(Dataset):
         shape(list of int): Additional shape of each datapoint.
         dtype(str): Name of dtype. Must be in torch_name2dtype
         dim: Dimension of variable length. 
-
+        split: dict, optional
+            Input for self.calc_split()
         
         Shape of each data in list should be [length, ...(dim), length, *shape] 
         """
@@ -256,6 +286,10 @@ class StringDataset(Dataset):
             logger.info(f"Loading {path_list} ...")
             with open(path_list, 'rb') as f:
                 self.str_list = pickle.load(f)
+        if split:
+            split = self.calc_split(dfs, **split)
+            self.str_list = list(itertools.compress(self.str_list, split))
+
         self.lengths = torch.tensor([len(string) for string in self.str_list], 
             dtype=torch.long)
         self.shape = tuple(shape)
@@ -301,7 +335,7 @@ class ArrayDataset(Dataset):
         return len(self.array)
 
 class NdarrayDataset(ArrayDataset):
-    def __init__(self, logger, name, dfs, dtype, path, cols=None, atype='torch', **kwargs):
+    def __init__(self, logger, name, dfs, dtype, path, cols=None, atype='torch',split=None,  **kwargs):
         super().__init__(logger, name, dfs, dtype, atype, **kwargs)
         ext_path = os.path.splitext(path)[-1][1:]
         if ext_path in ['npy', 'npz']:
@@ -320,36 +354,46 @@ class NdarrayDataset(ArrayDataset):
             array = array.astype(self.type)
         if cols is not None:
             array = array[:, cols]
+        if split:
+            split = self.calc_split(dfs, **split)
+            array = array(split)
         self.array = array
         self.size = ['batch_size'] + list(self.array.shape[1:])
 
 class SeriesDataset(ArrayDataset):
     def __init__(self, logger, name, dfs, 
-        df, dtype, col, atype='torch', **kwargs):
+        df, dtype, col, atype='torch', split=None, **kwargs):
         super().__init__(logger, name, dfs, dtype, atype, **kwargs)
         array = dfs[df][col].values
+        if split:
+            split = self.calc_split(dfs, **split)
+            array = array[split]
         if self.type == 'torch':
             self.array = torch.tensor(array, dtype=self.dtype)
         elif self.type == 'numpy':
             self.array = array.astype(self.dtype)
 class DataFrameDataset(ArrayDataset):
     def __init__(self, logger, name, dfs,
-        df, dtype, cols=None, atype='torch', **kwargs):
+        df, dtype, cols=None, atype='torch', split=None, **kwargs):
         super().__init__(logger, name, dfs, dtype, atype, **kwargs)
         if cols is None: cols = dfs[df].columns
         array = dfs[df][cols].values
+        if split:
+            split = self.calc_split(dfs, **split)
+            array = array[split]
         if self.type == 'torch':
             self.array = torch.tensor(array, dtype=self.dtype)
         elif self.type == 'numpy':
             self.array = array.astype(self.dtype)
 
 class SparseSquareDataset(Dataset):
-    def __init__(self, logger, name, dfs, padding_value, path_length,
-        path_index, path_value, len_name=None, dtype=None, **kwargs):
+    def __init__(self, logger, name, dfs, 
+        padding_value, path_length,
+        path_index, path_value, len_name=None, dtype=None, split=None, **kwargs):
         super().__init__(logger, name, dfs, **kwargs)
         """
-        Parameters
-        ----------
+        Parameters to write
+        -------------------
         padding_value(int): Pad token.
         path_length(str): Path to pickle or npy file or of list of length of each square.
             File data shuld be list(int) or np.ndarray(int)[]
@@ -359,7 +403,8 @@ class SparseSquareDataset(Dataset):
             File data should be list(np.ndarray[n_entry])
         """
         self.len_name = len_name or f"{self.name}_len"
-        
+        if split:
+            raise NotImplementedError("Splitting for SparseSquareDataset is not defined.")
         ext = os.path.splitext(path_length)[1]
         if ext == '.npy':
             self.lengths = torch.tensor(np.load(path_length), dtype=torch.long)
@@ -399,14 +444,16 @@ class SparseSquareDataset(Dataset):
 
     def __len__(self):
         return len(self.lengths)
-
-
-        
-
-
-
-
-
+    
+class GenerateDataset(Dataset):
+    def __init__(self, logger, name, dfs, feature_size, data_size, **kwargs):
+        super().__init__(logger, name, dfs,**kwargs)
+        self.feature_size = feature_size
+        self.data_size = data_size
+    def make_batch(self, batch, idx, device):
+        batch[self.name] = torch.randn(len(idx), self.feature_size, device=device)
+    def __len__(self):
+        return self.data_size
 
 dataset_type2class = {
     'string': StringDataset, 
@@ -414,6 +461,12 @@ dataset_type2class = {
     'series': SeriesDataset,
     'dataframe': DataFrameDataset,
     'sparse_square': SparseSquareDataset,
+    'generate': GenerateDataset
 }
+
+# Load from other modules
+# from .datasets.moleculedataset import MoleculeGraphDataset
+# dataset_type2class['molecule_graph'] = MoleculeGraphDataset
+
 def get_dataset(type, **kwargs):
     return dataset_type2class[type](**kwargs)

@@ -1,0 +1,16 @@
+type: class
+model: LogisticRegression
+params:
+  C:
+    type: float
+    suggest_type: float
+    log: true
+    low: 1.0e-3
+    high: 1000
+  l1_ratio:
+    type: float
+    suggest_type: float
+    low: 0.0
+    high: 1.0
+  penalty: elasticnet
+  solver: saga

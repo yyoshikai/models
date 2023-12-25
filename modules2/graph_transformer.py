@@ -1,3 +1,6 @@
+"""
+attn_mask is None, key_padding_mask is not Noneの時合ってる?
+"""
 import math
 import numpy as np
 import torch
@@ -10,11 +13,11 @@ import matplotlib.pyplot as plt
 
 
 class GraphAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, edge_voc_size, edge_pad_token, dropout=0,
+    def __init__(self, embed_dim, num_heads, edge_voc_size, edge_pad_token, edge_post_softmax, dropout=0,
             edge_embedded=False):
         super().__init__()
         self.num_heads = num_heads
-        self.dropout = nn.dropout
+        self.dropout = dropout
         self.head_dim = embed_dim // num_heads
         assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
         self.in_proj = nn.Linear(embed_dim, 3*embed_dim)
@@ -22,9 +25,10 @@ class GraphAttention(nn.Module):
 
         self.edge_embedded = edge_embedded
         if self.edge_embedded:
-            self.edge_embedding = nn.Embedding(edge_voc_size, num_heads, padding_idx=edge_pad_token)
-        else:
             self.edge_embedding = nn.Linear(edge_voc_size, num_heads)
+        else:
+            self.edge_embedding = nn.Embedding(edge_voc_size, num_heads, padding_idx=edge_pad_token)
+        self.edge_post_softmax = edge_post_softmax
 
     def forward(self, x: torch.Tensor, edge: torch.Tensor,
                 key_padding_mask = None,
@@ -79,9 +83,12 @@ class GraphAttention(nn.Module):
         ax.hist(edge.detach().cpu().numpy().ravel(), bins=np.linspace(-2, 2, 21), alpha=0.5)
         """
         
-        attn_weights += edge
+        # 231005追加 互換性はある。
+        if self.edge_post_softmax:
+            attn_weights = F.softmax(attn_weights, dim=-1) + edge
+        else:
+            attn_weights = F.softmax(attn_weights+edge, dim=-1)
         
-        attn_weights = F.softmax(attn_weights, dim=-1)
         if self.dropout > 0.0 and self.training:
             attn_weights = F.dropout(attn_weights, p=self.dropout)
         attn_output = torch.bmm(attn_weights, v)
@@ -93,9 +100,11 @@ class GraphAttention(nn.Module):
 
 
 class GraphAttentionLayer(nn.Module):
-    def __init__(self, d_model: int, nhead: int, edge_voc_size, edge_pad_token, dim_feedforward: int = 2048, dropout: float = 0.1):
+    def __init__(self, d_model: int, nhead: int, edge_voc_size, edge_pad_token, dim_feedforward: int = 2048, dropout: float = 0.1, 
+            edge_post_softmax = False):
         super().__init__()
-        self.self_attn = GraphAttention(d_model, nhead, edge_voc_size, edge_pad_token=edge_pad_token, dropout=dropout)
+        self.self_attn = GraphAttention(d_model, nhead, edge_voc_size, 
+            edge_pad_token=edge_pad_token, dropout=dropout, edge_post_softmax=edge_post_softmax)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)

@@ -51,6 +51,7 @@ class MeanStartEndMaxPooler(nn.Module):
         super().__init__()
     def forward(self, input: torch.Tensor, padding_mask: torch.Tensor, end_mask: torch.Tensor):
         """
+        padding_mask: (src == pad_token).transpose(0, 1)
         last_mask: (src == end_token).transpose(0, 1)のようなものを想定        
         """
         padding_mask = padding_mask.unsqueeze(-1)
@@ -106,3 +107,29 @@ class NemotoPooler(nn.Module):
         ave = torch.mean(input,dim=0)
         first = input[0]
         return torch.cat([mx,ave,first],dim=1)
+
+class GraphPooler(nn.Module):
+    def __init__(self, node_size, edge_size):
+        """
+        [WARNING] padding_mask is different from the above pooling functions
+        """
+        super().__init__()
+        self.node_norm = nn.LayerNorm(node_size, elementwise_affine=False)
+        self.edge_norm = nn.LayerNorm(edge_size, elementwise_affine=False)
+
+    def forward(self, node: torch.Tensor, edge: torch.Tensor, padding_mask: torch.Tensor):
+        """
+        Parameters
+        ----------
+        node: (float)[n_node, batch_size, node_size]
+        edge: (float)[batch_size, n_node, n_node, edge_size]
+        padding_mask: (bool)[batch_size, n_node]
+            padding_mask = node == pad_token
+        """
+        n_node, _, _ = node.shape
+        node_padding_mask = padding_mask.T.unsqueeze(-1) # [N, B]
+        node = torch.sum(torch.masked_fill(node, node_padding_mask, 0), dim=0) / (n_node - torch.sum(node_padding_mask, dim=0)) # [B, Fn]
+        edge_padding_mask = (padding_mask.unsqueeze(-1) | padding_mask.unsqueeze(-2)).unsqueeze(-1) # [B, N, N, 1]
+        edge = torch.sum(torch.masked_fill(edge, edge_padding_mask, 0), dim=(1, 2)) / \
+              (n_node**2 - torch.sum(edge_padding_mask, dim=(1,2))) # [B, Fe]
+        return torch.cat([self.node_norm(node), self.edge_norm(edge)], dim=-1) # [B, Fn+Fe]
