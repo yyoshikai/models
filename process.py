@@ -52,6 +52,8 @@ class ForwardProcess(CallProcess):
         self.module = module
     def get_callable(self, model):
         return  model[self.module]
+    def __str__(self):
+        return f"ForwardProcess(input={self.input}, output={self.output}, kwargs={self.kwargs}, module={self.module})"
 class FunctionProcess(CallProcess):
     def __init__(self, function, input, output=None, **kwargs):
         """
@@ -71,6 +73,8 @@ class FunctionProcess(CallProcess):
         self.function = function_config2func(function)
     def get_callable(self, model):
         return self.function
+    def __str__(self):
+        return f"ForwardProcess(input={self.input}, output={self.output}, kwargs={self.kwargs}, function={self.function})"
 
 import torch
 import numpy as np

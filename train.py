@@ -8,14 +8,15 @@ os.environ.setdefault("TOOLS_DIR", "/workspace")
 sys.path += [os.environ["TOOLS_DIR"]]
 import pickle
 import time
+import random
+import shutil
+from copy import deepcopy
+
 import yaml
 from addict import Dict
 import numpy as np
 import pandas as pd
 import torch
-import random
-import shutil
-from collections import defaultdict
 from tqdm import tqdm
 
 from tools.notice import notice, noticeerror
@@ -70,7 +71,7 @@ class NoticeAlarmHook(AlarmHook):
             notice(message)
 hook_type2class['notice_alarm'] = NoticeAlarmHook
 
-@noticeerror(from_="LatentTransformer/training", notice_end=False)
+@noticeerror(from_=f"train.py in {os.getcwd()}", notice_end=False)
 def main(config, args=None):
 
     # make training
@@ -118,6 +119,7 @@ def main(config, args=None):
     logger.info(f"# of params: {n_param}")
     logger.info(f"Model size(bit): {bit_size}")
     model.to(DEVICE)
+
     optimizer = get_optimizer(params=model.parameters(), **trconfig.optimizer)
     if trconfig.optimizer_init_weight:
         optimizer.load_state_dict(torch.load(trconfig.optimizer_init_weight))
@@ -209,6 +211,15 @@ def main(config, args=None):
     pre_hooks = [get_hook(logger=logger, result_dir=result_dir, **hconfig) for hconfig in trconfig.pre_hooks.values()]
     post_hooks = [get_hook(logger=logger, result_dir=result_dir, **hconfig) for hconfig in trconfig.post_hooks.values()]
 
+    # log config
+    lconfigs = []
+    lconfig = Dict()
+    for lconfig0 in trconfig.loop_logs:
+        lconfig.update(lconfig0)
+        lconfigs.append(deepcopy(lconfig))
+    max_loop_log_level = max([lc.level for lc in lconfigs]) \
+        if len(lconfigs) > 0 else 0
+        
     # load random state
     set_rstate(trconfig.rstate)
 
@@ -234,7 +245,17 @@ def main(config, args=None):
 
             # training
             batch = dl_train.get_batch(batch)
-            logger.log(level=5, msg=f"step {batch['step']}: batch size={batch['batch_size']}") # for debug
+            if len(lconfigs) > 0:
+                logger.log(level=max_loop_log_level, msg=f"Step {dl_train.step}: ")
+            for lconfig in lconfigs:
+                item = batch[lconfig.name]
+                msg = f"  {lconfig.name}: "
+                if lconfig.type == 'value':
+                    msg += str(item)
+                elif lconfig.type == 'shape':
+                    msg += str(list(item.shape))
+                logger.log(level=lconfig.level, msg=msg)
+
             start = time.time()
             batch = model(batch, processes=train_processes)
             loss = sum(batch[loss_name] for loss_name in trconfig.loss_names)

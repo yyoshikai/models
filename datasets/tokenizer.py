@@ -60,6 +60,11 @@ class VocabularyTokenizer():
     def voc_size(self):
         return len(self.tok2voc)
 
+def get_toker(voc_file):
+    with open(voc_file) as f:
+        toker = VocabularyTokenizer(f.read().splitlines())
+    return toker
+
 class OrderedTokenizer():
     """
     __init__のvocsをそのままの順でtoken対応させる。

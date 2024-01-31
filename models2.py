@@ -12,12 +12,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Option for debug
-PRINT_PROCESS = False 
+PRINT_PROCESS = False
 
 # functions
 def NewGELU(input):
     return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) \
         * (input + 0.044715 * torch.pow(input, 3.0))))
+def GELU(input):
+    return input * 0.5 * (1.0 + torch.erf(input / math.sqrt(2.0)))
 def sigmoid(input):
     return 1/(1+math.e**(-input))
 
@@ -92,6 +94,8 @@ function_name2func = {
     'sigmoid': torch.sigmoid,
     'tanh': torch.tanh,
     'newgelu': NewGELU,
+    'gelu': GELU,
+    'prelu': F.prelu,
     'none': lambda input: input,
     'exp': torch.exp,
     'log': torch.log,
@@ -166,11 +170,14 @@ class Model(nn.ModuleDict):
 
             if PRINT_PROCESS:
                 print(f"-----process {i}-----")
+                print(process)
                 for key, value in batch.items():
                     if isinstance(value, (torch.Tensor, np.ndarray)):
                         print(f"  {key}: {list(value.shape)}")
+                        torch.save(value,f'/workspace/{key}.pt')
                     else:
                         print(f"  {key}: {type(value).__name__}")
+
             process(self, batch)
         return batch
     def load(self, path, replace={}, strict=True):

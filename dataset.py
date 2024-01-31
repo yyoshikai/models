@@ -1,6 +1,13 @@
+"""
+240112 DataLoaderのdatasetsのconfigをupdateするように変更
+240126 NormalDatasetのget_idxsを修正(最初が空の配列になっていた。numpy.splitの仕様)
+"""
+
 import sys, os
 import inspect
 import itertools
+from copy import deepcopy
+
 import yaml
 import gc
 import pickle
@@ -27,9 +34,18 @@ class DataLoader:
         check_leftargs(self, logger, kwargs)
         if not isinstance(datasets, list):
             datasets = [datasets]
-        self.dset_configss = datasets
+
+        dset_configs = []
+        config = Dict()
+        for dset_config in datasets:
+            config.update(dset_config)
+            cur_config = deepcopy(config)
+            dset_configs.append(cur_config)
+        
+        self.dset_configss = dset_configs
         for dset_config in self.dset_configss:
             for df_config in dset_config.dfs.values():
+                assert ('path' in df_config) != ('filepath_or_buffer' in df_config) # 240112 datasetsのupdate機能のため念のため
                 if 'path' in df_config:
                     df_config['filepath_or_buffer'] = df_config.pop('path')
         self.n_dset = len(datasets)
@@ -59,7 +75,6 @@ class DataLoader:
         gc.collect()
         dfs = {}
         for df_name, df_config in self.dset_configss[self.i_dset].dfs.items():
-
             self.logger.info(f"Loading {df_config.filepath_or_buffer} ...")
             dfs[df_name] = pd.read_csv(**df_config)
         self.cur_dsets = {name: get_dataset(logger=self.logger, name=name, dfs=dfs, **dset_config) 
@@ -121,7 +136,9 @@ class NormalDataLoader(DataLoader):
         dset_size = len(dsets[self.dset_name0])
         idxs = np.arange(dset_size, dtype=int)
         self.rstate.shuffle(idxs)
-        idxs = np.split(idxs, range(0, dset_size, self.batch_size))
+        idxs = np.split(idxs, range(self.batch_size, dset_size, self.batch_size))
+        with open("idxs.pkl", 'wb') as f:
+            pickle.dump(idxs, f)
         return idxs
 
 class BucketDataLoader(DataLoader):
@@ -210,7 +227,7 @@ dataloader_type2class = {
     'bucket': BucketDataLoader
 }
 
-def get_dataloader(type, **kwargs):
+def get_dataloader(type, **kwargs) -> DataLoader:
     return dataloader_type2class[type](**kwargs)
 
 class Dataset:
@@ -349,9 +366,9 @@ class NdarrayDataset(ArrayDataset):
         else:
             raise ValueError(f"Unsupported type of ndarray: {path}")
         if self.type == 'torch':
-            array = array.to(self.type)
+            array = array.to(self.dtype)
         else:
-            array = array.astype(self.type)
+            array = array.astype(self.dtype)
         if cols is not None:
             array = array[:, cols]
         if split:
@@ -389,7 +406,7 @@ class DataFrameDataset(ArrayDataset):
 class SparseSquareDataset(Dataset):
     def __init__(self, logger, name, dfs, 
         padding_value, path_length,
-        path_index, path_value, len_name=None, dtype=None, split=None, **kwargs):
+        path_index, path_value, len_name=None, dtype=None, split=None, symmetrize=False, **kwargs):
         super().__init__(logger, name, dfs, **kwargs)
         """
         Parameters to write
@@ -407,12 +424,16 @@ class SparseSquareDataset(Dataset):
             raise NotImplementedError("Splitting for SparseSquareDataset is not defined.")
         ext = os.path.splitext(path_length)[1]
         if ext == '.npy':
-            self.lengths = torch.tensor(np.load(path_length), dtype=torch.long)
+            lengths = np.load(path_length)
         elif ext == '.pkl':
             with open(path_length, 'rb') as f:
-                self.lengths = torch.tensor(pickle.load(f), dtype=torch.long)
+                lengths = np.array(pickle.load(f))
+            if lengths.dtype == np.object_:
+                lengths = lengths.astype(int)
         else:
             raise ValueError(f"Unsupported type of path_length: {path_length}")
+        self.lengths = torch.tensor(lengths, dtype=torch.long)
+        
         with open(path_index, 'rb') as f:
             self.indices = pickle.load(f)
         with open(path_value, 'rb') as f:
@@ -422,6 +443,7 @@ class SparseSquareDataset(Dataset):
             self.dtype = torch_name2dtype[dtype]
         else:
             self.dtype = None
+        self.symmetrize = symmetrize
     def make_batch(self, batch, idx, device):
         batch_size = len(idx)
         lengths = self.lengths[idx].to(device)
@@ -440,6 +462,8 @@ class SparseSquareDataset(Dataset):
         indices = torch.cat([ibatches.unsqueeze(0), indices], dim=0)
         values = torch.cat(values, dim=0)
         data = torch.sparse_coo_tensor(indices, values, size=(batch_size, max_len, max_len)).to_dense()
+        if self.symmetrize:
+            data = data + data.transpose(-1, -2)
         batch[self.name] = data
 
     def __len__(self):

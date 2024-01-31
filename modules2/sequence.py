@@ -576,7 +576,7 @@ class LatentSequenceDecoder(nn.Module):
         self.register_buffer('square_subsequent_mask', square_mask)
 
 class AttentionDecoder(LatentSequenceDecoder):
-    def __init__(self, layer, num_layers, init, max_len, load_square_mask='keep'):
+    def __init__(self, layer, num_layers, max_len, init={}, load_square_mask='keep'):
         """
         layer: dict
             input for SelfAttentionLayer
@@ -588,7 +588,7 @@ class AttentionDecoder(LatentSequenceDecoder):
         """
         super().__init__()
         self.max_len = max_len
-        self.register_square_mask(max_len)
+        self.register_square_mask(max_len, is_init=True)
         d_model = layer['d_model']
         self.d_model = d_model
 
@@ -706,7 +706,7 @@ class TransformerLMDecoder(LatentSequenceDecoder):
         """
         super().__init__()
         self.max_len = max_len
-        self.register_square_mask(max_len)
+        self.register_square_mask(max_len, is_init=True)
         d_model = layer['d_model']
         self.d_model = d_model
 

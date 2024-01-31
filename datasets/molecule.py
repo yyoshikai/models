@@ -14,7 +14,7 @@ def randomize(mol, can, rstate, n_trial=100):
         if can == Chem.MolToSmiles(Chem.MolFromSmiles(ran)):
             break
     else:
-        raise ValueError
+        raise ValueError(can)
     return ran
 
 REMOVER = SaltRemover()

@@ -36,3 +36,7 @@ from .modules2.ssl import *
 for cls in [BarlowTwinsCriterion, MolCLIPCriterion]:
     module_type2class[cls.__name__] = cls
 
+# dataset
+from .dataset import dataset_type2class
+from .datasets.grover import GroverDataset
+dataset_type2class['grover'] = GroverDataset
