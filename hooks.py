@@ -6,7 +6,6 @@ import pandas as pd
 import torch
 from .alarm import get_alarm
 
-
 class AlarmHook:
     def __init__(self, logger, result_dir, 
         alarm={'type': 'silent', 'target': 'step'}, end=False):
@@ -24,6 +23,7 @@ class AlarmHook:
             self.ring(batch=batch, model=model)
     def ring(self, batch, model):
         raise NotImplementedError
+
 class SaveAlarmHook(AlarmHook):
     def __init__(self, logger, result_dir, 
         alarm={'type': 'silent', 'target': 'step'}, end=False):
@@ -36,7 +36,7 @@ class SaveAlarmHook(AlarmHook):
         model.save_state_dict(path)
 
 class AccumulateHook:
-    def __init__(self, logger, result_dir, names, cols, save_alarm,
+    def __init__(self, logger, result_dir, names, cols, save_alarm, shape_dims=None,
             checkpoint=None, fname='steps'):
         os.makedirs(result_dir, exist_ok=True)
         self.path_df = result_dir+f"/{fname}.csv"
@@ -47,11 +47,16 @@ class AccumulateHook:
         self.lists = defaultdict(list)
         self.names = names
         self.cols = cols
+        if shape_dims is None:
+            shape_dims = [None]*len(self.names)
+        self.shape_dims = shape_dims
 
     def __call__(self, batch, model):
         if 'end' not in batch:
-            for name, col in zip(self.names, self.cols):
+            for name, col, shape_dim in zip(self.names, self.cols, self.shape_dims):
                 item = batch[name]
+                if shape_dim is not None:
+                    item = item.shape[shape_dim]
                 if isinstance(item, torch.Tensor):
                     item = item.detach().cpu().numpy()
                 self.lists[col].append(item)        

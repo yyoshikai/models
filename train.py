@@ -113,7 +113,6 @@ def main(config, args=None):
     model = Model(logger=logger, **config.model)
     if trconfig.init_weight:
         model.load(**trconfig.init_weight)
-    
     df_param, n_param, bit_size = get_params(model)
     df_param.to_csv(f"{result_dir}/parameters.tsv", sep='\t', index=False)
     logger.info(f"# of params: {n_param}")
@@ -133,7 +132,7 @@ def main(config, args=None):
             self.scheduler.step()
     hook_type2class['scheduler_alarm'] = SchedulerAlarmHook
 
-    # Prepare abortion
+    # Prepare abortion (Deprecated)
     abort_step = trconfig.abortion.step or float('inf')
     abort_epoch = trconfig.abortion.epoch or float('inf')
     abort_time = trconfig.abortion.time or float('inf')
@@ -247,6 +246,8 @@ def main(config, args=None):
             batch = dl_train.get_batch(batch)
             if len(lconfigs) > 0:
                 logger.log(level=max_loop_log_level, msg=f"Step {dl_train.step}: ")
+
+            # Log shapes
             for lconfig in lconfigs:
                 item = batch[lconfig.name]
                 msg = f"  {lconfig.name}: "
@@ -261,6 +262,9 @@ def main(config, args=None):
             loss = sum(batch[loss_name] for loss_name in trconfig.loss_names)
             if trconfig.regularize_loss.normalize:
                 loss = loss / loss.detach()
+            if trconfig.regularize_loss.normalize_batch_size:
+                loss = loss / batch['batch_size']
+            batch['loss'] = loss
             try:
                 loss.backward()
             except Exception as e:
@@ -275,18 +279,6 @@ def main(config, args=None):
                 raise e
 
             # test: see gradients
-            grad_max = grad_min = 0
-            grad_mean = 0
-            grad_numel = 0
-            for p in model.parameters():
-                if p.grad is None: continue
-                grad_mean += torch.sum(p.grad**2)
-                grad_numel += p.grad.numel()
-                grad_max = max(grad_max, p.grad.max().item())
-                grad_min = min(grad_min, p.grad.min().item())
-            batch['grad_mean'] = grad_mean / grad_numel if grad_numel > 0 else 0.
-            batch['grad_max'] = grad_max
-            batch['grad_min'] = grad_min
             
             if trconfig.regularize_loss.clip_grad_norm:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 

@@ -45,65 +45,6 @@ def select_neighbor_and_aggregate(feature, index):
     return neighbor.sum(dim=1)
 
 
-class SelfAttention(nn.Module):
-    def __init__(self, *, hidden, in_feature, out_feature):
-        super(SelfAttention, self).__init__()
-        self.w1 = torch.nn.Parameter(torch.FloatTensor(hidden, in_feature))
-        self.w2 = torch.nn.Parameter(torch.FloatTensor(out_feature, hidden))
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        nn.init.xavier_normal_(self.w1)
-        nn.init.xavier_normal_(self.w2)
-
-    def forward(self, X):
-        x = torch.tanh(torch.matmul(self.w1, X.transpose(1, 0)))
-        x = torch.matmul(self.w2, x)
-        attn = torch.nn.functional.softmax(x, dim=-1)
-        x = torch.matmul(attn, X)
-        return x, attn
-
-
-class Readout(nn.Module):
-    def __init__(self,
-                 rtype: str = "none",
-                 hidden_size: int = 0,
-                 attn_hidden: int = None,
-                 attn_out: int = None,
-                 ):
-        super(Readout, self).__init__()
-        # Cached zeros
-        self.cached_zero_vector = nn.Parameter(torch.zeros(hidden_size), requires_grad=False)
-        self.rtype = "mean"
-
-        if rtype == "self_attention":
-            self.attn = SelfAttention(hidden=attn_hidden,
-                                      in_feature=hidden_size,
-                                      out_feature=attn_out)
-            self.rtype = "self_attention"
-
-    def forward(self, embeddings, scope):
-        # Readout
-        mol_vecs = []
-        self.attns = []
-        for _, (a_start, a_size) in enumerate(scope):
-            if a_size == 0:
-                mol_vecs.append(self.cached_zero_vector)
-            else:
-                cur_hiddens = embeddings.narrow(0, a_start, a_size)
-                if self.rtype == "self_attention":
-                    cur_hiddens, attn = self.attn(cur_hiddens)
-                    cur_hiddens = cur_hiddens.flatten()
-                    # Temporarily disable. Enable it if you want to save attentions.
-                    # self.attns.append(attn.cpu().detach().numpy())
-                else:
-                    cur_hiddens = cur_hiddens.sum(dim=0) / a_size
-                mol_vecs.append(cur_hiddens)
-
-        mol_vecs = torch.stack(mol_vecs, dim=0)  # (num_molecules, hidden_size)
-        return mol_vecs
-
-
 class MPNEncoder(nn.Module):
     def __init__(self, activation,
                  atom_messages: bool,
@@ -229,22 +170,6 @@ class MPNEncoder(nn.Module):
 
         return output  # num_atoms x hidden
 
-
-class PositionwiseFeedForward(nn.Module):
-    def __init__(self, d_model, d_ff, activation="PReLU", dropout=0.1, d_out=None):
-        super().__init__()
-        if d_out is None:
-            d_out = d_model
-        # By default, bias is on.
-        self.W_1 = nn.Linear(d_model, d_ff)
-        self.W_2 = nn.Linear(d_ff, d_out)
-        self.dropout = nn.Dropout(dropout)
-        self.act_func = get_activation_function(activation)
-
-    def forward(self, x):
-        return self.W_2(self.dropout(self.act_func(self.W_1(x))))
-
-
 class SublayerConnection(nn.Module):
     def __init__(self, size, dropout):
         super(SublayerConnection, self).__init__()
@@ -301,7 +226,6 @@ class MultiHeadedAttention(nn.Module):
         x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.h * self.d_k)
 
         return self.output_linear(x)
-
 
 class Head(nn.Module):
     def __init__(self, activation, bias, depth, dropout, undirected, dense, hidden_size, atom_messages=False):
@@ -408,7 +332,7 @@ class MTBlock(nn.Module):
         for _ in range(num_attn_head):
             self.heads.append(Head(**head, atom_messages=atom_messages))
 
-    def forward(self,  f_atoms, f_bonds, a2b, b2a, b2revb, a_scope, b_scope, a2a):
+    def forward(self,  f_atoms, f_bonds, a2b, b2a, b2revb, a2a):
 
         if self.atom_messages:
             # Only add linear transformation in the input feature.
@@ -456,21 +380,15 @@ class GTransEncoder(nn.Module):
     def __init__(self,
                  head,
                  hidden_size,
-                 edge_fdim,
-                 node_fdim,
+                 edge_fdim=BOND_FDIM,
+                 node_fdim=ATOM_FDIM,
                  dropout=0.0,
                  activation="ReLU",
                  num_mt_block=1,
                  num_attn_head=4,
-                 bias=False,
-                 res_connection=False):
+                 bias=False):
         super(GTransEncoder, self).__init__()
 
-        self.hidden_size = hidden_size
-        self.dropout = dropout
-        self.activation = activation
-        self.bias = bias
-        self.res_connection = res_connection
         self.edge_blocks = nn.ModuleList()
         self.node_blocks = nn.ModuleList()
 
@@ -481,14 +399,14 @@ class GTransEncoder(nn.Module):
 
         for i in range(num_mt_block):
             if i != 0:
-                edge_input_dim_i = self.hidden_size
-                node_input_dim_i = self.hidden_size
+                edge_input_dim_i = hidden_size
+                node_input_dim_i = hidden_size
             block_args = dict(head=head,
                 num_attn_head=num_attn_head,
-                hidden_size=self.hidden_size,
+                hidden_size=hidden_size,
                 activation=activation,
                 dropout=dropout,
-                bias=self.bias)
+                bias=bias)
             self.edge_blocks.append(MTBlock(**block_args,
                                             input_dim=edge_input_dim_i,
                                             atom_messages=False))
@@ -496,92 +414,118 @@ class GTransEncoder(nn.Module):
                                             input_dim=node_input_dim_i,
                                             atom_messages=True))
 
-        self.ffn_atom_from_atom = PositionwiseFeedForward(self.hidden_size + node_fdim,
-                                                          self.hidden_size * 4,
-                                                          activation=self.activation,
-                                                          dropout=self.dropout,
-                                                          d_out=self.hidden_size)
+    def forward(self, f_atoms, f_bonds, a2b, b2a, b2revb, a2a):
 
-        self.ffn_atom_from_bond = PositionwiseFeedForward(self.hidden_size + node_fdim,
-                                                          self.hidden_size * 4,
-                                                          activation=self.activation,
-                                                          dropout=self.dropout,
-                                                          d_out=self.hidden_size)
-
-        self.ffn_bond_from_atom = PositionwiseFeedForward(self.hidden_size + edge_fdim,
-                                                          self.hidden_size * 4,
-                                                          activation=self.activation,
-                                                          dropout=self.dropout,
-                                                          d_out=self.hidden_size)
-
-        self.ffn_bond_from_bond = PositionwiseFeedForward(self.hidden_size + edge_fdim,
-                                                          self.hidden_size * 4,
-                                                          activation=self.activation,
-                                                          dropout=self.dropout,
-                                                          d_out=self.hidden_size)
-
-        self.atom_from_atom_sublayer = SublayerConnection(size=self.hidden_size, dropout=self.dropout)
-        self.atom_from_bond_sublayer = SublayerConnection(size=self.hidden_size, dropout=self.dropout)
-        self.bond_from_atom_sublayer = SublayerConnection(size=self.hidden_size, dropout=self.dropout)
-        self.bond_from_bond_sublayer = SublayerConnection(size=self.hidden_size, dropout=self.dropout)
-
-        self.act_func_node = get_activation_function(self.activation)
-        self.act_func_edge = get_activation_function(self.activation)
-
-        self.dropout_layer = nn.Dropout(p=dropout)
-
-    def pointwise_feed_forward_to_atom_embedding(self, emb_output, atom_fea, index, ffn_layer):
-        aggr_output = select_neighbor_and_aggregate(emb_output, index)
-        aggr_outputx = torch.cat([atom_fea, aggr_output], dim=1)
-        return ffn_layer(aggr_outputx), aggr_output
-
-    def pointwise_feed_forward_to_bond_embedding(self, emb_output, bond_fea, a2nei, b2revb, ffn_layer):
-        aggr_output = select_neighbor_and_aggregate(emb_output, a2nei)
-        # remove rev bond / atom --- need for bond view
-        aggr_output = self.remove_rev_bond_message(emb_output, aggr_output, b2revb)
-        aggr_outputx = torch.cat([bond_fea, aggr_output], dim=1)
-        return ffn_layer(aggr_outputx), aggr_output
-
-    @staticmethod
-    def remove_rev_bond_message(orginal_message, aggr_message, b2revb):
-        rev_message = orginal_message[b2revb]
-        return aggr_message - rev_message
-
-    def forward(self, f_atoms, f_bonds, a2b, b2a, b2revb, a_scope, b_scope, a2a):
-        f_atoms, f_bonds, a2b, b2a, b2revb, a_scope, b_scope, a2a
-        
-        # opt pointwise_feed_forward
         original_f_atoms, original_f_bonds = f_atoms, f_bonds
 
         for nb in self.node_blocks:  # atom messages. Multi-headed attention
-            f_atoms = nb(f_atoms, original_f_bonds, a2b, b2a, b2revb, a_scope, b_scope, a2a)
+            f_atoms = nb(f_atoms, original_f_bonds, a2b, b2a, b2revb, a2a)
         for eb in self.edge_blocks:  # bond messages. Multi-headed attention
-            f_bonds = eb(original_f_atoms, f_bonds, a2b, b2a, b2revb, a_scope, b_scope, a2a)
+            f_bonds = eb(original_f_atoms, f_bonds, a2b, b2a, b2revb, a2a)
 
-        atom_output = f_atoms
-        bond_output = f_bonds
-
-        return atom_output, bond_output
-
-
-
+        return f_atoms, f_bonds
 
 class GroverEncoder(nn.Module):
-    def __init__(self, head, hidden_size, dropout, activation, 
-            num_mt_block, num_attn_head, bias, **kwar):
+    def __init__(self, head, hidden_size, memory_size, dropout, activation, 
+            num_mt_block, num_attn_head, bias):
         super().__init__()
         self.grover = GTransEncoder(
             head=head,
             hidden_size=hidden_size,
-            edge_fdim=BOND_FDIM + ATOM_FDIM, node_fdim=ATOM_FDIM,
+            edge_fdim=BOND_FDIM, node_fdim=ATOM_FDIM,
             dropout=dropout, activation=activation,
             num_mt_block=num_mt_block, num_attn_head=num_attn_head,
             bias=bias)
-    def forward(self,  f_atoms, f_bonds, a2b, b2a, b2revb, a_scope, b_scope, a2a):
-        atom_output, bond_output = self.grover(f_atoms, f_bonds, a2b, b2a, b2revb, a_scope, b_scope, a2a)
-        graph_f_atoms = atom_output.split([asc[1] for asc in a_scope])
-        graph_f_bonds = bond_output.split(b_scope[:, 1])
-        graph_f = [torch.cat([fa, fb]) for fa, fb in zip(graph_f_atoms, graph_f_bonds)]
-        graph_f = pad_sequence(graph_f, batch_first=False, padding_value=0)
+        self.memory_linear = nn.Linear(hidden_size, memory_size, bias=False)
+    def forward(self, f_atoms, f_bonds, a2b, b2a, b2revb, a_scope, b_scope, a2a):
+        atom_output, bond_output = self.grover(f_atoms, f_bonds, a2b, b2a, b2revb, a2a) # [N_a_total, D], [N_b_total, D]
+        device = atom_output.device
+
+        graph_f_atoms = atom_output[1:].split([asc[1] for asc in a_scope], dim=0) # [B, ~N_a, D]
+        graph_f_bonds = bond_output[1:].split([bsc[1] for bsc in b_scope], dim=0) # [B, ~N_b, D]
+        graph_f = [torch.cat([fa, fb]) for fa, fb in zip(graph_f_atoms, graph_f_bonds)] # [B, ~N, D]
+        padding_mask = [torch.full((len(f), ), fill_value=False, dtype=torch.bool, device=device) for f in graph_f]
+        graph_f = pad_sequence(graph_f, batch_first=False, padding_value=0) # [N_max, B, D]
+        graph_f = self.memory_linear(graph_f)        
+        padding_mask = pad_sequence(padding_mask, batch_first=False, padding_value=True).T
         
-        return graph_f
+        # layernormがあった方がよい?
+
+        return graph_f, padding_mask
+
+# Grover+Unimolのモデル用。
+# GTransEncoderの出力をUnimolの入力に整形する。
+# 通常のunimolのembeddingと合わせたいが, 原子の順番の対応がつくか分からないため保留
+class Grover2UnimolEmbedding(nn.Module):
+    def __init__(self,
+            nhead, 
+            d_model,  
+            atom_size, 
+            bond_size,
+            atom_voc_size,
+            bond_voc_size,
+            bond_pad_token=0):
+        super().__init__()
+        self.f_atoms_emb = nn.Linear(atom_size, d_model)
+        self.f_bonds_emb = nn.Linear(bond_size, nhead)
+        # atom embedding
+        self.atom_voc_size = atom_voc_size
+
+
+        # atom pair embedding
+        self.bond_pad_token = bond_pad_token
+        self.bond_embedding = nn.Embedding(bond_voc_size, nhead, padding_idx=bond_pad_token)
+        
+    def forward(self,
+            f_atoms: torch.FloatTensor,
+            f_bonds: torch.FloatTensor,
+            f_atoms_out: torch.FloatTensor, 
+            f_bonds_out:torch.FloatTensor,
+            b2a, b2revb,  
+            a_scope: list, b_scope: list):
+        """
+        Parameters
+        ----------
+        f_atoms: torch.FloatTensor[Na_total, Dain]
+        f_bonds: torch.FloatTensor[Nb_total, Dain]
+        f_atoms_out: torch.FloatTensor[Na_total, Daout]
+        f_bonds_out: torch.FloatTensor[Nb_total, Daout]
+        a_scope: list[B, 2]
+            [(start point, Na)]
+        b_scope: list[B, 2]
+            [(start point, Nb)]
+        """
+
+        # atom embedding
+        device = f_atoms.device
+        atoms_emb = torch.cat([f_atoms, f_atoms_out], dim=1) # [Na_total, Dain+Daout]
+        atoms_emb = self.f_atoms_emb(atoms_emb) # [Na_total, Dm]
+        atoms_emb = atoms_emb[1:].split([asc[1] for asc in a_scope], dim=0) # [B, ~Na, Dm]
+        atoms_emb = pad_sequence(atoms_emb, batch_first=False, padding_value=0) # [Na, B, Dm]
+        n_atom, batch_size, _ = atoms_emb.shape
+
+        # bond embedding
+        bonds_emb_g = torch.cat([f_bonds, f_bonds_out], dim=1) # [Nb_total, Dbin+Dbout]
+        bonds_emb_g = self.f_bonds_emb(bonds_emb_g) # [Nb_total, Nh]
+        _, nhead = bonds_emb_g.shape
+
+        indices = torch.tensor([
+            b2a[ib] + b2a[b2revb[ib]] * n_atom
+            for ib in range(batch_size)], device=device, dtype=torch.long)
+        for ib, (start_point, nb) in enumerate(b_scope):
+            indices[start_point:start_point+nb] += ib * (n_atom**2)
+        indices.unsqueeze_(-1)
+        indices = indices.expand(-1, nhead)
+        bonds_emb = torch.zeros((batch_size*n_atom*n_atom, nhead), dtype=torch.float, device=device)
+        bonds_emb = torch.scatter(bonds_emb, dim=0, index=indices, src=bonds_emb)
+        apairs = bonds_emb.reshape(batch_size, n_atom, n_atom, nhead)
+
+        ## key_padding_mask
+        padding_mask = [torch.full((asc[1], ), fill_value=False, dtype=torch.bool, device=device)
+            for asc in a_scope]
+        padding_mask = pad_sequence(padding_mask, batch_first=True, padding_value=True)
+        apairs.masked_fill_(padding_mask.view(batch_size, 1, n_atom, 1), -torch.inf)
+
+        apairs = apairs.permute(0, 3, 1, 2)
+        
+        return atoms_emb, apairs, padding_mask

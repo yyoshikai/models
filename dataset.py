@@ -14,6 +14,8 @@ import pickle
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 from addict import Dict
 from .utils import check_leftargs
 
@@ -137,8 +139,6 @@ class NormalDataLoader(DataLoader):
         idxs = np.arange(dset_size, dtype=int)
         self.rstate.shuffle(idxs)
         idxs = np.split(idxs, range(self.batch_size, dset_size, self.batch_size))
-        with open("idxs.pkl", 'wb') as f:
-            pickle.dump(idxs, f)
         return idxs
 
 class BucketDataLoader(DataLoader):
@@ -160,7 +160,6 @@ class BucketDataLoader(DataLoader):
         add_lower_margin: bool
         add_upper_margin: bool
         batch_size: Optional[int or List[int]]
-
         num_tokens: Optional, int
         num_tokens_dim: Optional, int
             batch_size*(length**num_tokens_dim) is restricted to num_tokens
@@ -178,7 +177,7 @@ class BucketDataLoader(DataLoader):
         else:
             if num_tokens_dim is None: num_tokens_dim = 1
             if max_batch_size is None: max_batch_size = float('inf')
-
+        
         self.buckets = [None]*len(self.dset_configss)
         self.bucket_dset = bucket_dset
 
@@ -221,10 +220,53 @@ class BucketDataLoader(DataLoader):
         idxs = np.array(idxs, dtype=object)
         self.rstate.shuffle(idxs)
         return idxs
+    
+class MultiBucketDataLoader(DataLoader):
+    def __init__(self, logger, device, datasets, seed, buckets, batch_sizes, checkpoint=None, 
+        **kwargs):
+        """
+        2つ以上のデータに対するbucketing
+        add_upper_margin, add_lower_marginはないので, 0, infをbucketsのbinsに加えて下さい
+
+        Parameters
+        ----------
+        buckets: dict
+            {dataset_name(str): bins(list[int])}
+        batch_sizes: list[int]
+        
+        """
+        super().__init__(logger=logger, datasets=datasets, seed=seed,
+            device=device, checkpoint=checkpoint, **kwargs)
+        
+        self.buckets = buckets
+        self.batch_sizes = batch_sizes
+
+    def get_idxs(self, dsets):
+        d2b = None
+        for dset_name, bins in self.buckets.items():
+            lengths = dsets[dset_name].lengths
+            d2b0 = np.digitize(lengths, bins) - 1
+            if d2b is None: 
+                d2b = d2b0
+            else:
+                d2b = np.maximum(d2b, d2b0)
+        np.save("./d2b.npy", d2b)
+        
+        idxs = []
+        for ib, batch_size in enumerate(self.batch_sizes):
+            bucket_idxs = np.where(d2b == ib)[0]
+            if len(bucket_idxs) == 0: continue
+            self.rstate.shuffle(bucket_idxs)
+            idxs += [bucket_idxs[i:i+batch_size] for i in range(0, len(bucket_idxs), batch_size)]
+        idxs = np.array(idxs, dtype=object)
+        self.rstate.shuffle(idxs)
+        np.save("./idxs.npy", idxs)
+        return idxs
 
 dataloader_type2class = {
     'normal': NormalDataLoader,
-    'bucket': BucketDataLoader
+    'bucket': BucketDataLoader,
+    'multibucket': MultiBucketDataLoader
 }
 
 def get_dataloader(type, **kwargs) -> DataLoader:
@@ -468,6 +510,92 @@ class SparseSquareDataset(Dataset):
 
     def __len__(self):
         return len(self.lengths)
+
+# いずれSparse..Datasetにmerge予定
+class SparseSquareDataset2(Dataset):
+    def __init__(self, logger, name, dfs, 
+        padding_value, path_length,
+        path_index, path_value, len_name=None, dtype=None, split=None, symmetrize=False, return_sparse=False, **kwargs):
+        super().__init__(logger, name, dfs, **kwargs)
+        """
+        Parameters to write
+        -------------------
+        padding_value(int): Pad token.
+        path_length(str): Path to pickle or npy file or of list of length of each square.
+            File data shuld be list(int) or np.ndarray(int)[]
+        path_index(str): path to pickle file of list of 
+            File data should be list(np.ndarray[n_entry, 2])
+        path_value(str): Path to pickle file of list
+            File data should be list(np.ndarray[n_entry])
+        return_sparse(bool):
+            If True, return indices and values of matrix
+        """
+        self.len_name = len_name or f"{self.name}_len"
+        if split:
+            raise NotImplementedError("Splitting for SparseSquareDataset is not defined.")
+        ext = os.path.splitext(path_length)[1]
+        if ext == '.npy':
+            lengths = np.load(path_length)
+        elif ext == '.pkl':
+            with open(path_length, 'rb') as f:
+                lengths = np.array(pickle.load(f))
+            if lengths.dtype == np.object_:
+                lengths = lengths.astype(int)
+        else:
+            raise ValueError(f"Unsupported type of path_length: {path_length}")
+        self.lengths = torch.tensor(lengths, dtype=torch.long)
+        
+        with open(path_index, 'rb') as f:
+            self.indices = pickle.load(f)
+        with open(path_value, 'rb') as f:
+            self.values = pickle.load(f)
+        self.padding_value = padding_value
+        if dtype is not None:
+            self.dtype = torch_name2dtype[dtype]
+        else:
+            self.dtype = None
+        self.symmetrize = symmetrize
+        self.return_sparse = return_sparse
+    def make_batch(self, batch, idx, device):
+        batch_size = len(idx)
+        lengths = self.lengths[idx].to(device)
+        batch[self.len_name] = lengths
+        max_len = torch.max(lengths)
+        ibatches = []
+        indices = []
+        values = []
+        if self.return_sparse:
+            rindices = []
+            rvalues = []
+        for i, idx in enumerate(idx):
+            index = torch.tensor(self.indices[idx], dtype=torch.long, device=device) # [n_edge, 2]
+            value = torch.tensor(self.values[idx], dtype=self.dtype, device=device)
+            indices.append(index)
+            ibatches.append(torch.full((index.shape[0], ), fill_value=i, dtype=torch.int, device=device))
+            values.append(value)
+            if self.return_sparse:
+                rindices.append(index) # [n_edge, 2]
+                rvalues.append(value)
+        ibatches = torch.cat(ibatches, dim=0)
+        indices = torch.cat(indices, dim=0).T # [2, n_edges]
+        indices = torch.cat([ibatches.unsqueeze(0), indices], dim=0)
+        values = torch.cat(values, dim=0)
+        data = torch.sparse_coo_tensor(indices, values, size=(batch_size, max_len, max_len)).to_dense()
+        if self.symmetrize:
+            data = data + data.transpose(-1, -2)
+        batch[self.name] = data
+        if self.return_sparse:
+            rindices0 = pad_sequence([rindex[:,0] for rindex in rindices],
+                batch_first=True, padding_value=0) # [B, n_edge]
+            rindices1 = pad_sequence([rindex[:,1] for rindex in rindices], 
+                batch_first=True, padding_value=1) # [B, n_edge]
+            rindices = torch.stack([rindices0, rindices1], dim=-1)
+            batch[self.name + '_indices'] = rindices
+            rvalues = pad_sequence(rvalues, batch_first=True, padding_value=0) # [B, n_edge]
+            batch[self.name + '_values'] = rvalues
+
+    def __len__(self):
+        return len(self.lengths)
     
 class GenerateDataset(Dataset):
     def __init__(self, logger, name, dfs, feature_size, data_size, **kwargs):
@@ -485,12 +613,9 @@ dataset_type2class = {
     'series': SeriesDataset,
     'dataframe': DataFrameDataset,
     'sparse_square': SparseSquareDataset,
+    'sparse_square2': SparseSquareDataset2,
     'generate': GenerateDataset
 }
-
-# Load from other modules
-# from .datasets.moleculedataset import MoleculeGraphDataset
-# dataset_type2class['molecule_graph'] = MoleculeGraphDataset
 
 def get_dataset(type, **kwargs):
     return dataset_type2class[type](**kwargs)

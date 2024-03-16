@@ -5,9 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from ..models2 import function_name2func, function_config2func, \
-    init_config2func, module_type2class
-import re
+from ..models2 import function_name2func, function_config2func, init_config2func
 
 
 
@@ -365,6 +363,7 @@ class TransformerDecoder(nn.Module):
     def __init__(self, layer, n_layer, max_len, norm=None, init=dict()):
         """
         古いモデル。
+        (240208では3dvaeにて普通に使っている。)
 
         Parameters
         ----------
@@ -419,14 +418,12 @@ class TransformerDecoder(nn.Module):
         args, kwargs: 
             See each function for details.
         """
-        if mode == 'forced':
-            return self.forced(*args, **kwargs)
-        elif mode == 'cell_forward':
-            return self.cell_forward(*args, **kwargs)
-        elif mode == 'prepare_cell_forward':
-            return self.prepare_cell_forward(*args, **kwargs)
+        method = getattr(self, mode, None)
+        if method is not None:
+            return method(*args, **kwargs)
         else:
             raise ValueError(f'Unsupported type of mode: {mode}')
+        
     def forced(self, tgt, memory, memory_key_padding_mask):
         """
         Parameters
@@ -514,7 +511,68 @@ class TransformerDecoder(nn.Module):
             mem_ks.append(k)
             mem_vs.append(v)
         return mem_attn_mask, ks, vs, mem_ks, mem_vs
+    def expand_beam(self, memory: torch.Tensor, 
+            memory_key_padding_mask: torch.Tensor, beam_size: int):
+        """
+        Parameters
+        ----------
+        memory: (torch.float)[length, batch_size, d_model]
+        memory_key_padding_mask: (torch.bool?float?)
+            [batch_size, length]
+        """
+        length, batch_size, d_model = memory.shape
+        memory = memory.view(length, batch_size, 1, d_model) \
+            .expand(-1, -1, beam_size, -1) \
+            .contiguous() \
+            .view(length, batch_size*beam_size, d_model)
+        memory_key_padding_mask = memory_key_padding_mask \
+            .view(batch_size, 1, length) \
+            .expand(-1, beam_size, -1) \
+            .contiguous() \
+            .view(batch_size*beam_size, length)
+        return memory, memory_key_padding_mask
+    def gather_beam(self, beam_index: torch.Tensor, 
+            ks, vs, mem_ks, mem_vs):
+        """
+        Parameters
+        ----------
+        beam_index: (long)[batch_size, beam_size]
+        
+        
+        """
+        batch_size, beam_size = beam_index.shape
+        batch_beam_head_size, dlength, d_head = ks[0].shape
+        head_size = batch_beam_head_size // batch_size // beam_size
+        beam_index_d = beam_index \
+            .view(batch_size, beam_size, 1, 1, 1) \
+            .expand(-1, -1, head_size, dlength, d_head)
+        new_ks = [
+            k.view(batch_size, beam_size, head_size, dlength, d_head) \
+                .gather(dim=1, index=beam_index_d) \
+                .view(batch_size*beam_size*head_size, dlength, d_head)
+            for k in ks]
+        new_vs = [
+            v.view(batch_size, beam_size, head_size, dlength, d_head) \
+                .gather(dim=1, index=beam_index_d) \
+                .view(batch_size*beam_size*head_size, dlength, d_head)
+            for v in vs]
+        
+        _, mlength, d_model = mem_ks[0].shape
+        beam_index_m = beam_index \
+            .view(batch_size, beam_size, 1, 1, 1) \
+            .expand(batch_size, beam_size, head_size, mlength, d_model)
+        new_mem_ks = [
+            mem_k.view(batch_size, beam_size, head_size, mlength, d_model) \
+                .gather(dim=1, index=beam_index_m) \
+                .view(batch_size*beam_size*head_size, mlength, d_model)
+            for mem_k in mem_ks]
+        new_mem_vs = [
+            mem_v.view(batch_size, beam_size, head_size, mlength, d_model) \
+                .gather(dim=1, index=beam_index_m) \
+                .view(batch_size*beam_size*head_size, mlength, d_model)
+            for mem_v in mem_vs]
 
+        return new_ks, new_vs, new_mem_ks, new_mem_vs
 
 def load_square_mask_pre_hook_keep(model, state_dict, prefix, local_metadata, strict,
         missing_keys, upexpected_keys, error_msgs):
@@ -691,6 +749,19 @@ class AttentionDecoder(LatentSequenceDecoder):
         
         return cur_output.transpose(0, 1), state
 
+    def expand_beam(self, latent: torch.Tensor, beam_size: int):
+        """
+        Parameters
+        ----------
+        latent: (float)[length, batch_size, d_model]
+        
+        """
+        length, batch_size, d_model = latent.shape
+        latent = latent.view(length, batch_size, 1, d_model)
+        latent = latent.expand(-1, batch_size, -1, -1).contiguous()
+        latent = latent.view(length, batch_size*beam_size, d_model)
+        return latent
+
 
 # LMベースのmemoryやlatentを必要としないDecoder
 class TransformerLMDecoder(LatentSequenceDecoder):
@@ -838,7 +909,7 @@ class GreedyDecoder(nn.Module):
     def aggregate(self, outs):
         return torch.cat(outs, dim=1)
     
-    def beam_init(self, latent: torch.Tensor, beam_size: int):
+    def beam_init(self, latent: torch.Tensor, beam_size: int, expand: bool=True):
         """
         Parameters
         ----------
@@ -854,10 +925,12 @@ class GreedyDecoder(nn.Module):
         proba: (float)[batch_size, beam_size]
         
         """
-        batch_size, latent_size = latent.shape
+        batch_size = latent.shape[-2]
         device = latent.device
-        latent = latent.view(batch_size, 1, latent_size).expand(-1, beam_size, -1).contiguous()
-        latent = latent.view(batch_size*beam_size, latent_size)
+        if expand: 
+            latent_size = latent.shape[1]
+            latent = latent.view(batch_size, 1, latent_size).expand(-1, beam_size, -1).contiguous()
+            latent = latent.view(batch_size*beam_size, latent_size)
         cur_input = torch.full((batch_size*beam_size, 1), fill_value=self.start_token,
             dtype=torch.long, device=device)
         is_ended = torch.full((batch_size, beam_size), fill_value=False,

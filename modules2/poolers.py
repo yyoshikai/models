@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from ..models2 import module_type2class
+import torch.nn.functional as F
 """ 
 現状, lastpoolerは, padding_mask=1の文字がずっと続いた後に0の文字が続くということを前提としている。
 
@@ -127,9 +127,148 @@ class GraphPooler(nn.Module):
             padding_mask = node == pad_token
         """
         n_node, _, _ = node.shape
-        node_padding_mask = padding_mask.T.unsqueeze(-1) # [N, B]
+        node_padding_mask = padding_mask.T.unsqueeze(-1) # [N, B, 1]
         node = torch.sum(torch.masked_fill(node, node_padding_mask, 0), dim=0) / (n_node - torch.sum(node_padding_mask, dim=0)) # [B, Fn]
         edge_padding_mask = (padding_mask.unsqueeze(-1) | padding_mask.unsqueeze(-2)).unsqueeze(-1) # [B, N, N, 1]
         edge = torch.sum(torch.masked_fill(edge, edge_padding_mask, 0), dim=(1, 2)) / \
               (n_node**2 - torch.sum(edge_padding_mask, dim=(1,2))) # [B, Fe]
         return torch.cat([self.node_norm(node), self.edge_norm(edge)], dim=-1) # [B, Fn+Fe]
+
+
+class GraphMeanMaxPooler(nn.Module):
+    def __init__(self, node_size, edge_size, eps=1e-5):
+        super().__init__()
+        self.node_size = node_size
+        self.edge_size = edge_size
+        self.eps = eps
+    
+    def forward(self, node: torch.Tensor, edge: torch.Tensor, padding_mask: torch.Tensor):
+        """
+        Parameters
+        ----------
+        node: (float)[n_node, batch_size, node_size]
+        edge: (float)[batch_size, n_node, n_node, edge_size]
+        padding_mask: (bool)[batch_size, n_node]
+            padding_mask = node == pad_token
+        """
+        n_node, batch_size, _ = node.shape
+        node_padding_mask = padding_mask.T.unsqueeze(-1) # [N, B, 1]
+        node_mean = torch.masked_fill(node, node_padding_mask, 0) # [N, B, Fn]
+        node_mean = torch.sum(node_mean, dim=0) / (n_node - torch.sum(node_padding_mask, dim=0)) # [B, Fn]
+        node_max = torch.masked_fill(node, node_padding_mask, 0) # [N, B, Fn]
+        node_max = torch.max(node_max, dim=0).values # [B, Fn]
+
+        edge_padding_mask = (padding_mask.unsqueeze(-1) | padding_mask.unsqueeze(-2)).unsqueeze(-1) # [B, N, N, 1]
+        edge_mean = torch.masked_fill(edge, edge_padding_mask, 0) # [B, N, N, Fe]
+        edge_mean = torch.sum(edge_mean, dim=(1, 2)) / \
+              (n_node**2 - torch.sum(edge_padding_mask, dim=(1,2))) # [B, Fe]
+        edge_max = torch.masked_fill(edge, edge_padding_mask, -torch.inf) # [B, N, N, Fe]
+        edge_max = torch.max(edge_max.view(batch_size, n_node*n_node, -1), dim=1).values # [B, Fe]
+        return torch.cat([
+            F.layer_norm(node_mean, (self.node_size,), eps=self.eps),
+            F.layer_norm(node_max, (self.node_size,), eps=self.eps),
+            F.layer_norm(edge_mean, (self.edge_size,), eps=self.eps),
+            F.layer_norm(edge_max, (self.edge_size,), eps=self.eps)],
+            dim=-1) # [B, Fn*2+Fe*2]
+
+class GraphStartMeanMaxPooler(nn.Module):
+    def __init__(self, node_size, edge_size, eps=1e-5):
+        super().__init__()
+        self.node_size = node_size
+        self.edge_size = edge_size
+        self.eps = eps
+    
+    def forward(self, node: torch.Tensor, edge: torch.Tensor, padding_mask: torch.Tensor):
+        """
+        Parameters
+        ----------
+        node: (float)[n_node, batch_size, node_size]
+        edge: (float)[batch_size, n_node, n_node, edge_size]
+        padding_mask: (bool)[batch_size, n_node]
+            padding_mask = node == pad_token
+        """
+        n_node, batch_size, _ = node.shape
+        node_padding_mask = padding_mask.T.unsqueeze(-1) # [N, B, 1]
+        node_start = node[0]
+        node_mean = torch.masked_fill(node, node_padding_mask, 0) # [N, B, Fn]
+        node_mean = torch.sum(node_mean, dim=0) / (n_node - torch.sum(node_padding_mask, dim=0)) # [B, Fn]
+        node_max = torch.masked_fill(node, node_padding_mask, 0) # [N, B, Fn]
+        node_max = torch.max(node_max, dim=0).values # [B, Fn]
+
+        edge_padding_mask = (padding_mask.unsqueeze(-1) | padding_mask.unsqueeze(-2)).unsqueeze(-1) # [B, N, N, 1]
+        edge_mean = torch.masked_fill(edge, edge_padding_mask, 0) # [B, N, N, Fe]
+        edge_start = torch.sum(edge_mean[:,0], dim=1) / (n_node - torch.sum(node_padding_mask, dim=0)) # [B, Fe]
+        edge_mean = torch.sum(edge_mean, dim=(1, 2)) / \
+              (n_node**2 - torch.sum(edge_padding_mask, dim=(1,2))) # [B, Fe]
+        edge_max = torch.masked_fill(edge, edge_padding_mask, -torch.inf) # [B, N, N, Fe]
+        edge_max = torch.max(edge_max.view(batch_size, n_node*n_node, -1), dim=1).values # [B, Fe]
+
+        return torch.cat([
+            F.layer_norm(node_start, (self.node_size,), eps=self.eps),
+            F.layer_norm(node_mean, (self.node_size,), eps=self.eps),
+            F.layer_norm(node_max, (self.node_size,), eps=self.eps),
+            F.layer_norm(edge_start, (self.edge_size,), eps=self.eps),
+            F.layer_norm(edge_mean, (self.edge_size,), eps=self.eps),
+            F.layer_norm(edge_max, (self.edge_size,), eps=self.eps)],
+            dim=-1)
+
+class GraphPooler2(nn.Module):
+    def __init__(self, node_size, edge_size, 
+            node_start=False, node_mean=False, node_max=False,
+            edge_start=False, edge_mean=False, edge_max=False,
+            eps=1e-5):
+        super().__init__()
+        self.node_size = node_size
+        self.edge_size = edge_size
+        self.node_start = node_start
+        self.node_mean = node_mean
+        self.node_max = node_max
+        self.edge_start = edge_start
+        self.edge_mean = edge_mean
+        self.edge_max = edge_max
+        self.eps = eps
+    
+    def forward(self, node: torch.Tensor, edge: torch.Tensor, padding_mask: torch.Tensor):
+        """
+        Parameters
+        ----------
+        node: (float)[n_node, batch_size, node_size]
+        edge: (float)[batch_size, n_node, n_node, edge_size]
+        padding_mask: (bool)[batch_size, n_node]
+            padding_mask = node == pad_token
+        """
+        n_node, batch_size, _ = node.shape
+        pooleds = []
+        node_padding_mask = padding_mask.T.unsqueeze(-1) # [N, B, 1]
+        if self.node_start:
+            node_start = node[0]
+            pooleds.append(F.layer_norm(node_start, (self.node_size,), eps=self.eps))
+        if self.node_mean:
+            node_mean = torch.masked_fill(node, node_padding_mask, 0)
+            node_mean = torch.sum(node_mean, dim=0) / (n_node - torch.sum(node_padding_mask, dim=0)) # [B, Fn]
+            pooleds.append(F.layer_norm(node_mean, (self.node_size,), eps=self.eps))
+        if self.node_max:
+            node_max = torch.masked_fill(node, node_padding_mask, 0) # [N, B, Fn]
+            node_max = torch.max(node_max, dim=0).values # [B, Fn]
+            pooleds.append(F.layer_norm(node_max, (self.node_size,), eps=self.eps))
+
+        edge_padding_mask = (padding_mask.unsqueeze(-1) | padding_mask.unsqueeze(-2)).unsqueeze(-1) # [B, N, N, 1]
+        if self.edge_start:
+            edge_mean = torch.masked_fill(edge, edge_padding_mask, 0) # [B, N, N, Fe]
+            edge_start = torch.sum(edge_mean[:,0], dim=1) / (n_node - torch.sum(node_padding_mask, dim=0)) # [B, Fe]
+            pooleds.append(F.layer_norm(edge_start, (self.edge_size,), eps=self.eps))
+        if self.edge_mean:
+            if not self.edge_start:
+                edge_mean = torch.masked_fill(edge, edge_padding_mask, 0) # [B, N, N, Fe]
+            edge_mean = torch.sum(edge_mean, dim=(1, 2)) / \
+                (n_node**2 - torch.sum(edge_padding_mask, dim=(1,2))) # [B, Fe]
+            pooleds.append(F.layer_norm(edge_mean, (self.edge_size, ), eps=self.eps))
+        if self.edge_max:
+            edge_max = torch.masked_fill(edge, edge_padding_mask, -torch.inf) # [B, N, N, Fe]
+            edge_max = torch.max(edge_max.view(batch_size, n_node*n_node, -1), dim=1).values # [B, Fe]
+            pooleds.append(F.layer_norm(edge_max, (self.edge_size, ), eps=self.eps))
+        return torch.cat(pooleds, dim=-1) # [B, F]
+
+
+
+

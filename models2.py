@@ -171,10 +171,11 @@ class Model(nn.ModuleDict):
             if PRINT_PROCESS:
                 print(f"-----process {i}-----")
                 print(process)
+                os.makedirs(f"./process_batch/{i}", exist_ok=True)
                 for key, value in batch.items():
                     if isinstance(value, (torch.Tensor, np.ndarray)):
                         print(f"  {key}: {list(value.shape)}")
-                        torch.save(value,f'/workspace/{key}.pt')
+                        torch.save(value,f'./process_batch/{i}/{key}.pt')
                     else:
                         print(f"  {key}: {type(value).__name__}")
 

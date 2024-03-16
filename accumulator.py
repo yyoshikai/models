@@ -30,7 +30,6 @@ class NumpyAccumulator:
         if indices is not None:
             accums = accums[indices]
         return accums
-        
     def save(self, path_without_ext, indices=None):
         path = path_without_ext + ".npy"
         os.makedirs(os.path.dirname(path), exist_ok=True)

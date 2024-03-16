@@ -95,3 +95,5 @@ class Tunnel(nn.Module):
         for layer in self.layers:
             next_input = layer(next_input)
         return next_input
+    def __len__(self):
+        return len(self.layers)

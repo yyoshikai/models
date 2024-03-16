@@ -91,42 +91,32 @@ class BinaryMetric(Metric):
             scores[f"{self.name}"] = \
                 self.calc_score(y_true=total_targets, y_score=total_inputs)
         return scores
+    def calc_score(self, y_true, y_score):
+        raise NotImplementedError
         
 class AUROCMetric(BinaryMetric):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
     def calc_score(self, y_true, y_score):
         if np.all(y_true == y_true[0]):
             return 0
         else:
             return roc_auc_score(y_true=y_true, y_score=y_score)
 class AUPRMetric(BinaryMetric):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
     def calc_score(self, y_true, y_score):
         if np.all(y_true == y_true[0]):
             return 0
         else:
             return average_precision_score(y_true=y_true, y_score=y_score)
 class RMSEMetric(BinaryMetric):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
     def calc_score(self, y_true, y_score):
         return np.sqrt(mean_squared_error(y_true=y_true, y_pred=y_score))
 class MAEMetric(BinaryMetric):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
     def calc_score(self, y_true, y_score):
         return mean_absolute_error(y_true=y_true, y_pred=y_score)
 class R2Metric(BinaryMetric):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
     def calc_score(self, y_true, y_score):
         return r2_score(y_true=y_true, y_pred=y_score)
 
 class MeanMetric(Metric):
-    def __init__(self, logger, name, **kwargs):
-        super().__init__(logger, name, **kwargs)
     def init(self):
         self.scores = defaultdict(list)
     def calc(self, scores):
@@ -143,8 +133,6 @@ class MeanMetric(Metric):
             scores[self.name] = np.mean(np.concatenate(total_values))
         return scores
 class ValueMetric(MeanMetric):
-    def __init__(self, logger, name, **kwargs):
-        super().__init__(logger, name, **kwargs)
     def add(self, batch):
         self.scores[self.val_name].append(batch[self.name].cpu().numpy())
 class PerfectAccuracyMetric(MeanMetric):

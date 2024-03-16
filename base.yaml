@@ -1,0 +1,64 @@
+# 240217作成
+# train.py用のconfig作成時に必要なものの見本。
+# R=required O(v)=optional(default value)
+# 型は指定されない限り[str]
+training:
+  result_dir:
+    dirname: R
+    duplicate: R[error, ask, overwrite, merge等]
+  verbose:
+    loglevel:
+      stream: O(info)
+      file: O(debug)
+  gpuid: O(0)
+  detect_anomaly: O(False)[bool]
+  deterministic: O(False)[bool]
+  data: 
+    train:
+      type: R
+      # typeごとの引数
+    vals: R[dict]
+      # データ名と引数
+  model_seed: O(No RNG initialization)[int]
+  init_weight: O(No load weight)
+  optimizer:
+    type: R[adam, adamw, radam, lookahead等]
+    # typeごとの引数
+  optimizer_init_weight: O(No load weight)
+  accumulators: O(No accumulation)[list]
+  - type: R[numpy, list等]
+    # typeごとの引数
+  metrics: O[dict]
+    metric_name: 
+      type: R[value, auroc, aupr, rmse, mae, r2, perfect, partial等]
+      # typeごとの引数
+  stocks:
+    score_df: O(No load score_df)
+  train_loop: R[list]
+  val_loop: R[list]
+  val_loop_add_train: O(False)[bool]
+  loss_names: list
+  regularize_loss:
+    normalize: O(False)[bool]
+    clip_grad_norm: O(False)[bool]
+    clip_grad_value: O(No gradient clipping)[float]
+  schedule:
+    opt_freq: R[int]
+
+  pre_hooks: O[dict]
+    hook_name:
+      type: R[
+        save_alarm, notice_alarm, scheduler_alarm, validation_alarm,
+        checkpoint_alarm, accumulate, 
+        abort, step_abort, epoch_abort, time_abort等]
+      # typeごとの引数
+    # save_alarm, checkpoint_alarm, validation_alarm, scheduler_alarm等
+  post_hooks: O[dict]
+    # pre_hooksと同じ
+    # scheduler_alarm等
+
+  loop_logs: list # updated
+  - level: R[warning, info, debug等]
+    type: R[value, shape等]
+    name: R
+  

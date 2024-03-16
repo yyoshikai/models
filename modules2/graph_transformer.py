@@ -11,7 +11,6 @@ from .. import module_type2class
 
 import matplotlib.pyplot as plt
 
-
 class GraphAttention(nn.Module):
     def __init__(self, embed_dim, num_heads, edge_voc_size, edge_pad_token, edge_post_softmax, dropout=0,
             edge_embedded=False):

@@ -1,4 +1,5 @@
 from .models2 import function_config2func, PRINT_PROCESS
+
 class Process:
     def __init__(self):
         pass
@@ -46,7 +47,7 @@ class ForwardProcess(CallProcess):
             Name of output(s) in the batch from the module.
             If None, input is used as output (inplace process)
         kwargs: dict
-            他のパラメータはモジュールに直接渡される。    
+            Other kwargs are directly send to module
         """
         super().__init__(input, output, **kwargs)
         self.module = module
