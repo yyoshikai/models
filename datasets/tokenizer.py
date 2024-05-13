@@ -60,7 +60,7 @@ class VocabularyTokenizer():
     def voc_size(self):
         return len(self.tok2voc)
 
-def get_toker(voc_file):
+def get_toker(voc_file) -> VocabularyTokenizer: 
     with open(voc_file) as f:
         toker = VocabularyTokenizer(f.read().splitlines())
     return toker

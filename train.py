@@ -2,15 +2,20 @@ import sys, os
 """ver 12 - 4
 ・共通のModelを使うように変更
 ・train, valは必ず複数セット
+
+240402 optimizer.zero_grad()をtrain開始時からoptimizer作成時に移動
+    opt_freq >= 2でload_state_dictする場合結果が変わると思ったので。
 """
 
 os.environ.setdefault("TOOLS_DIR", "/workspace")
 sys.path += [os.environ["TOOLS_DIR"]]
 import pickle
+import importlib
 import time
 import random
 import shutil
 from copy import deepcopy
+
 
 import yaml
 from addict import Dict
@@ -27,11 +32,13 @@ from tools.torch import get_params
 from models.dataset import get_dataloader
 from models.accumulator import get_accumulator, NumpyAccumulator
 from models.metric import get_metric
-from models.optimizer import get_optimizer, get_scheduler
+from models.optimizer import get_scheduler
 from models.process import get_process
 from tools.tools import nullcontext
 from models.hooks import AlarmHook, hook_type2class, get_hook
 from models import Model
+from models.models2 import PRINT_PROCESS
+from models.optimizer import ModelOptimizer
 
 def save_rstate(dirname):
     os.makedirs(dirname, exist_ok=True)
@@ -119,10 +126,64 @@ def main(config, args=None):
     logger.info(f"Model size(bit): {bit_size}")
     model.to(DEVICE)
 
-    optimizer = get_optimizer(params=model.parameters(), **trconfig.optimizer)
-    if trconfig.optimizer_init_weight:
-        optimizer.load_state_dict(torch.load(trconfig.optimizer_init_weight))
-    train_processes = [get_process(**process) for process in trconfig.train_loop]
+    # prepare optimizer
+    if 'optimizers' not in trconfig:
+        optimizers = {
+            'loss': {
+                'optimizer': trconfig.optimizer,
+                'loss_names': trconfig.loss_names,
+                'init_weight': trconfig.get('optimizer_init_weight', None),
+                'opt_freq': trconfig.scheduler.opt_freq,
+                'normalize': trconfig.regularize_loss.normalize,
+                'clip_grad_norm': trconfig.regularize_loss.get('clip_grad_norm'),
+                'clip_grad_value': trconfig.regularize_loss.get('clip_grad_value')
+            }
+        }
+        if trconfig.regularize_loss.normalize_batch_size:
+            assert trconfig.regularize_loss.normalize_item is None
+            optimizers['loss']['normalize_item'] = 'batch_size'
+        elif trconfig.regularize_loss.normalize_item:
+            optimizers['loss']['normalize_item'] = trconfig.regularize_loss.normalize_item
+    else:
+        optimizers = trconfig.optimizers
+    optimizers = [
+        ModelOptimizer(name=oname, model=model, **oconfig)
+            for oname, oconfig in optimizers.items()]
+    
+    # process
+    train_processes = trconfig.train_loop
+    if isinstance(train_processes, list):
+        train_processes = [get_process(**process) for process in train_processes]
+    elif isinstance(train_processes, dict):
+        if 'path' in train_processes: # 関数を指定する場合
+            train_loop_module = importlib.import_module(name='train_loop_module', package=train_processes.path)
+            train_processes = train_loop_module.__getattribute__(train_processes.function)
+        else:
+            train_processes = list(train_processes.values())
+            train_times = [process.pop('order') for process in train_processes]
+            train_processes = [train_processes[i] for i in np.argsort(train_times)]
+            train_processes = [get_process(**process) for process in train_processes]
+    else:
+        raise ValueError
+    val_processes = trconfig.val_loop
+    if isinstance(val_processes, list):
+        val_processes = [get_process(**process) for process in trconfig.val_loop]
+        if trconfig.val_loop_add_train: 
+            val_processes = train_processes + val_processes
+    elif isinstance(val_processes, dict):
+        if 'path' in train_processes: # 関数を指定する場合
+            val_loop_module = importlib.import_module(name='val_loop_module', package=val_processes.path)
+            val_processes = val_loop_module.__getattribute__(val_processes.function)
+        else:
+            val_processes = list(val_processes.values())
+            if trconfig.val_loop_add_train: 
+                val_processes += list(trconfig.train_loop)
+            val_times = [process.pop('order') for process in val_processes]
+            val_processes = [val_processes[i] for i in np.argsort(val_times)]
+            val_processes = [get_process(**process) for process in val_processes]
+    else:
+        raise ValueError
+
     class SchedulerAlarmHook(AlarmHook):
         def __init__(self, scheduler, **kwargs):
             super().__init__(**kwargs)
@@ -143,9 +204,6 @@ def main(config, args=None):
     metrics = [ get_metric(logger=logger, name=name, **met_config) for name, met_config in trconfig.metrics.items() ]
     scores_df = pd.read_csv(trconfig.stocks.score_df, index_col="Step") \
         if trconfig.stocks.score_df else  pd.DataFrame(columns=[], dtype=float)
-    val_processes = [get_process(**process) for process in trconfig.val_loop]
-    if trconfig.val_loop_add_train: 
-        val_processes = train_processes + val_processes
     class ValidationAlarmHook(AlarmHook):
         eval_steps = []
         def ring(self, batch, model):
@@ -227,7 +285,7 @@ def main(config, args=None):
     logger.info("Training started.")
     with (tqdm(total=None, initial=dl_train.step) if trconfig.verbose.show_tqdm else nullcontext()) as pbar:
         now = time.time()
-        optimizer.zero_grad()
+
         while True:
 
             batch = {'step': dl_train.step, 'epoch': dl_train.epoch}
@@ -259,41 +317,15 @@ def main(config, args=None):
 
             start = time.time()
             batch = model(batch, processes=train_processes)
-            loss = sum(batch[loss_name] for loss_name in trconfig.loss_names)
-            if trconfig.regularize_loss.normalize:
-                loss = loss / loss.detach()
-            if trconfig.regularize_loss.normalize_batch_size:
-                loss = loss / batch['batch_size']
-            batch['loss'] = loss
-            try:
-                loss.backward()
-            except Exception as e:
-                os.makedirs(f"{result_dir}/error/batch", exist_ok=True)
-                for key, value in batch.items():
-                    if isinstance(value, torch.Tensor):
-                        torch.save(value, f"{result_dir}/error/batch/{key}.pt")
-                    else:
-                        with open(f"{result_dir}/error/batch/{key}.pkl", 'wb') as f:
-                            pickle.dump(value, f)
-                model.save_state_dict(f"{result_dir}/error/model")
-                raise e
-
-            # test: see gradients
             
-            if trconfig.regularize_loss.clip_grad_norm:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 
-                max_norm=trconfig.regularize_loss.clip_grad_norm, error_if_nonfinite=True)
-            if trconfig.regularize_loss.clip_grad_value:
-                torch.nn.utils.clip_grad_value_(model.parameters(),
-                clip_value=trconfig.regularize_loss.clip_grad_value)
-            if dl_train.step % trconfig.schedule.opt_freq == 0:
-                optimizer.step()
-                optimizer.zero_grad()
+            for optimizer0 in optimizers:
+                optimizer0.step(batch)
+            
             batch['time'] = time.time() - start
                 
             for hook in post_hooks:
                 hook(batch, model)
-            del batch, loss
+            del batch
             torch.cuda.empty_cache()
             if pbar is not None: pbar.update(1)
     for hook in pre_hooks+post_hooks:

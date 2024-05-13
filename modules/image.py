@@ -6,7 +6,7 @@ import torchvision
 import torchvision.transforms as T
 from torchvision.models.feature_extraction import create_feature_extractor
 from ..utils import check_leftargs
-from ..models import Tunnel
+from ...models.modules2.tunnel import Tunnel
 
 transform_type2class = {
     'Normalize': T.Normalize,
@@ -91,7 +91,5 @@ class BarlowTwinsHead(Module):
         self.output = output
         self.projection = Tunnel(logger, projection, input_size=sizes[self.input])
         
-
-
 
 

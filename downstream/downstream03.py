@@ -142,6 +142,7 @@ def main(config, type, model, params, objective, n_trial,
     notice(bool)
     """
     # Make logger
+    print(f"result_dir: {result_dir}")
     os.makedirs(result_dir, exist_ok=True)
     logger = default_logger(filename=f"{result_dir}/log.txt", file_level=log_file, stream_level=log_stream)
     optuna.logging.set_verbosity(optuna_loglevels[log_optuna])
@@ -223,7 +224,8 @@ def main(config, type, model, params, objective, n_trial,
             direction = metric2direction[objective]
             if show_tqdm:
                 pbar = tqdm(total=n_trial, desc="Trials")
-            def objective(trial):
+            def objective(trial: optuna.trial.Trial):
+                logger.info(f"Optuna trial {trial.number}")
                 params = {}
                 for name, pconfig in param_configs.items():
                     if isinstance(pconfig, dict):

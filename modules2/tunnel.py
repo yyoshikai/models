@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from ..models2 import init_config2func, function_config2func, module_type2class
+from ..models2 import init_config2func, function_config2func, register_module
 
 class Affine(nn.Module):
     def __init__(self, weight, bias, input_size):
@@ -73,12 +73,16 @@ def get_layer(config, input_size):
     else:
         raise ValueError(f"Unsupported config: {config.type}")
     return layer, input_size
+
+@register_module
 class Layer(nn.Module):
     def __init__(self, layer, input_size):
         super().__init__()
         self.layer, _ = get_layer(layer, input_size)
     def forward(self, input):
         return self.layer(input)
+
+@register_module
 class Tunnel(nn.Module):
     def __init__(self, layers, input_size):
         super().__init__()

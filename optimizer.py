@@ -4,6 +4,7 @@ import torch
 from torch import optim 
 from torch.optim import lr_scheduler
 
+from .models2 import Model
 
 # From https://github.com/szc19990412/TransMIL
 class RAdam(optim.Optimizer):
@@ -156,14 +157,60 @@ optimizer_type2class = {
     'radam': RAdam,
     'lookahead': LookaheadOptimizer
 }
-def get_optimizer(type, **kwargs):
+def get_optimizer(type, **kwargs) -> torch.optim.Optimizer:
     return optimizer_type2class[type](**kwargs)
+
+# Optimizerのwrapper
+class ModelOptimizer:
+    def __init__(self, name, model: Model, optimizer, modules=None,
+                loss_names = ['loss'], init_weight=None,
+                opt_freq=1, normalize=False, normalize_item=None,
+                clip_grad_norm=None, clip_grad_value=None):
+        self.name = name
+        if modules is not None: 
+            self.params = []
+            for mname in modules:
+                self.params += list(model[mname].parameters())
+        else:
+            self.params = model.parameters()
+        self.optimizer = get_optimizer(params=self.params, **optimizer)
+        self.loss_names = loss_names
+        self.opt_freq = opt_freq
+        self.normalize = normalize
+        self.normalize_item = normalize_item
+        self.clip_grad_norm = clip_grad_norm
+        self.clip_grad_value = clip_grad_value
+        if init_weight is not None:
+            self.optimizer.load_state_dict(torch.load(init_weight))
+        else:
+            self.optimizer.zero_grad()
+
+    def step(self, batch):
+        loss = sum(batch[lname] for lname in self.loss_names)
+        if self.normalize:
+            loss = loss / loss.detach()
+        if self.normalize_item:
+            loss = loss / batch[self.normalize_item]
+        batch[self.name] = loss
+        loss.backward()
+        if batch['step']+1 % self.opt_freq == 0: # これで合っている?
+            if self.clip_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(self.params, 
+                    max_norm=self.clip_grad_norm, error_if_nonfinite=True)
+            if self.clip_grad_value is not None:
+                torch.nn.utils.clip_grad_value_(self.params,
+                    clip_value=self.clip_grad_value)
+            self.optimizer.step()
+            self.optimizer.zero_grad()
 
 scheduler_type2class = {
     'multistep': lr_scheduler.MultiStepLR,
     'linear': lr_scheduler.LinearLR,
     'exponential': lr_scheduler.ExponentialLR
 }
+
+
+
 def get_scheduler(optimizer, type, last_epoch=-1, **kwargs):
     if type in scheduler_type2class:
         return scheduler_type2class[type](optimizer=optimizer, **kwargs)

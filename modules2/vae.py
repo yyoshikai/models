@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
-from ..models2 import module_type2class
+from models import register_module
 
+@register_module
 class VAE(nn.Module):
     name = 'vae'
     def __init__(self, var_coef=1.0, eval_vae=False):
@@ -39,6 +40,8 @@ class VAE(nn.Module):
             else:
                 latent = mu
             return latent
+
+@register_module
 class MinusD_KLLoss(nn.Module):
     def __init__(self):
         super().__init__()

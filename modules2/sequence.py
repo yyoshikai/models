@@ -5,11 +5,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from ..models2 import function_name2func, function_config2func, init_config2func
+from ..models2 import function_name2func, function_config2func, init_config2func, register_module
 
 
 
 # sequence modules
+@register_module
 class TeacherForcer(nn.Module):
     def __init__(self, length_dim):
         super().__init__()
@@ -33,6 +34,7 @@ class TeacherForcer(nn.Module):
             return_ += (return_[-1].shape[self.length_dim], )
         return return_
 
+@register_module
 class MaskMaker(nn.Module):
     def __init__(self, mask_token, dtype='bool', direction='equal'):
         super().__init__()
@@ -73,6 +75,7 @@ class SelfAttentionLayer_old(nn.TransformerEncoderLayer):
         super().__init__(d_model=d_model, dim_feedforward=dim_feedforward, activation=activation, norm_first=norm_first, **kwargs)
 
 # 231016 attention weightも返せるようにするため改変 ※__init__の引数の順番が若干変わっている以外は同じ。
+@register_module
 class SelfAttentionLayer(nn.Module):
     def __init__(self, d_model, activation, nhead, d_ff_factor=None, 
             dim_feedforward=None, norm_first=True, dropout=0.1, layer_norm_eps=1e-5):
@@ -212,6 +215,7 @@ def get_posenc(length: int, emb_size) -> torch.Tensor:
     pe = pe.unsqueeze(1)
     return pe
 
+
 class PositionalEncoding(nn.Module):
     def __init__(self, emb_size: int, dropout: float, max_len: int,
             load_pe: str='keep'):
@@ -254,6 +258,7 @@ class PositionalEncoding(nn.Module):
             pe = Variable(self.pe[position], requires_grad=False)
         return self.dropout(input+pe)
 
+@register_module
 class PositionalEmbedding(nn.Module):
     def __init__(self, embedding: dict, dropout: float, max_len:int, 
         factorize:bool=False, load_pe='keep'):
@@ -311,6 +316,7 @@ class PositionalEmbedding(nn.Module):
         return self.dropout(input+pe)
 
 # encoders
+@register_module
 class TransformerEncoder(nn.Module):
     def __init__(self, layer, n_layer, norm=None, init=dict()):
         """
@@ -359,6 +365,7 @@ class TransformerEncoder(nn.Module):
             need_weights=need_weights)
 
 # decoders
+@register_module
 class TransformerDecoder(nn.Module):
     def __init__(self, layer, n_layer, max_len, norm=None, init=dict()):
         """
@@ -633,6 +640,7 @@ class LatentSequenceDecoder(nn.Module):
         self.max_len = max_len
         self.register_buffer('square_subsequent_mask', square_mask)
 
+@register_module
 class AttentionDecoder(LatentSequenceDecoder):
     def __init__(self, layer, num_layers, max_len, init={}, load_square_mask='keep'):
         """
@@ -764,6 +772,7 @@ class AttentionDecoder(LatentSequenceDecoder):
 
 
 # LMベースのmemoryやlatentを必要としないDecoder
+@register_module
 class TransformerLMDecoder(LatentSequenceDecoder):
     def __init__(self, layer, num_layers, init, max_len, load_square_mask='keep'):
         """
@@ -860,11 +869,13 @@ class TransformerLMDecoder(LatentSequenceDecoder):
         return cur_output.transpose(0, 1), state
 
 
+@register_module
 class CrossEntropyLoss(nn.CrossEntropyLoss):
     def forward(self, input, target):
         n_class = input.shape[-1]
         return super().forward(input=input.contiguous().view(-1, n_class), target=target.ravel())
 
+@register_module
 class GreedyDecoder(nn.Module):
     """
     231013 クラス自体にデータを貯めるようになっていないのはなぜですか?    
@@ -998,3 +1009,5 @@ class GreedyDecoder(nn.Module):
                 force])
         return force
 
+def get_token_size(input: torch.Tensor, pad_token: int):
+    return torch.sum(input != pad_token)

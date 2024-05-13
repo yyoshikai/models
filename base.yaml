@@ -2,6 +2,7 @@
 # train.py用のconfig作成時に必要なものの見本。
 # R=required O(v)=optional(default value)
 # 型は指定されない限り[str]
+# 240510 更新: optimizerを複数指定可能にしたのに合わせる。
 training:
   result_dir:
     dirname: R

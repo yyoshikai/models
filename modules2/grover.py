@@ -11,6 +11,7 @@ from torch.nn import LayerNorm, functional as F
 from torch.nn.utils.rnn import pad_sequence
 
 from ..datasets.grover import ATOM_FDIM, BOND_FDIM
+from .. import register_module
 
 def get_activation_function(activation: str):
     if activation == 'ReLU':
@@ -376,6 +377,7 @@ class MTBlock(nn.Module):
             f_bonds = self.sublayer(x_in, x_out)
             return f_bonds
 
+@register_module
 class GTransEncoder(nn.Module):
     def __init__(self,
                  head,
@@ -425,6 +427,7 @@ class GTransEncoder(nn.Module):
 
         return f_atoms, f_bonds
 
+@register_module
 class GroverEncoder(nn.Module):
     def __init__(self, head, hidden_size, memory_size, dropout, activation, 
             num_mt_block, num_attn_head, bias):
@@ -456,6 +459,7 @@ class GroverEncoder(nn.Module):
 # Grover+Unimolのモデル用。
 # GTransEncoderの出力をUnimolの入力に整形する。
 # 通常のunimolのembeddingと合わせたいが, 原子の順番の対応がつくか分からないため保留
+@register_module
 class Grover2UnimolEmbedding(nn.Module):
     def __init__(self,
             nhead, 

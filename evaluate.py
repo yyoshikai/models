@@ -44,6 +44,10 @@ def main(config):
     processes: list
     show_tqdm: bool
     notice: bool
+
+    metrics
+    accumulators
+    
     """
 
     result_dir = make_result_dir(**config.result_dir)
@@ -76,7 +80,7 @@ def main(config):
     accums = {aname: get_accumulator(logger=logger, **aconfig)
         for aname, aconfig in config.accumulators.items()}
     idx_accum = NumpyAccumulator(logger=logger, input='idx', org_type='np.ndarray')
-    metrics = [get_metric(name=mname, **mconfig) for mname, mconfig
+    metrics = [get_metric(logger=logger, name=mname, **mconfig) for mname, mconfig
         in config.metrics.items()]
     hooks = list(accums.values())+metrics+[idx_accum]
 
@@ -127,6 +131,9 @@ def main(config):
 
 
 if __name__ == '__main__':
-    config = load_config2(config_dir="", default_configs=[])
+    default_configs = []
+    if os.path.exists('base.yaml'):
+        default_configs.append('base')
+    config = load_config2(config_dir="", default_configs=default_configs)
     main(config)
 

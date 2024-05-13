@@ -136,11 +136,12 @@ class GraphPooler(nn.Module):
 
 
 class GraphMeanMaxPooler(nn.Module):
-    def __init__(self, node_size, edge_size, eps=1e-5):
+    def __init__(self, node_size, edge_size, eps=1e-5, layer_norm=True):
         super().__init__()
         self.node_size = node_size
         self.edge_size = edge_size
         self.eps = eps
+        self.layer_norm = layer_norm
     
     def forward(self, node: torch.Tensor, edge: torch.Tensor, padding_mask: torch.Tensor):
         """
@@ -164,12 +165,17 @@ class GraphMeanMaxPooler(nn.Module):
               (n_node**2 - torch.sum(edge_padding_mask, dim=(1,2))) # [B, Fe]
         edge_max = torch.masked_fill(edge, edge_padding_mask, -torch.inf) # [B, N, N, Fe]
         edge_max = torch.max(edge_max.view(batch_size, n_node*n_node, -1), dim=1).values # [B, Fe]
-        return torch.cat([
-            F.layer_norm(node_mean, (self.node_size,), eps=self.eps),
-            F.layer_norm(node_max, (self.node_size,), eps=self.eps),
-            F.layer_norm(edge_mean, (self.edge_size,), eps=self.eps),
-            F.layer_norm(edge_max, (self.edge_size,), eps=self.eps)],
-            dim=-1) # [B, Fn*2+Fe*2]
+        if self.layer_norm:
+            return torch.cat([
+                F.layer_norm(node_mean, (self.node_size,), eps=self.eps),
+                F.layer_norm(node_max, (self.node_size,), eps=self.eps),
+                F.layer_norm(edge_mean, (self.edge_size,), eps=self.eps),
+                F.layer_norm(edge_max, (self.edge_size,), eps=self.eps)],
+                dim=-1) # [B, Fn*2+Fe*2]
+        else:
+            return torch.cat([node_mean, node_max, edge_mean, edge_max], dim=-1)
+        
+
 
 class GraphStartMeanMaxPooler(nn.Module):
     def __init__(self, node_size, edge_size, eps=1e-5):

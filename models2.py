@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models import register_module, module_type2class
+
 # Option for debug
 PRINT_PROCESS = False
 
@@ -87,6 +89,11 @@ def get_tensor_size(x: torch.Tensor, dim=None):
     if dim is not None:
         size = size[dim]
     return size
+def mask(x: torch.Tensor, idx: int, direction:str):
+    if direction == 'equal':
+        return x == idx
+    else:
+        return x != idx
 
 function_name2func = {
     'relu': F.relu,
@@ -101,12 +108,16 @@ function_name2func = {
     'log': torch.log,
     'sum': torch.sum,
     'mean': torch.mean,
+    'mul': torch.mul,
     'log_softmax': F.log_softmax,
     'softplus': F.softplus,
     'transpose': torch.transpose,
     'argmax': torch.argmax,
-    'size': get_tensor_size
+    'detach': lambda input: input.detach(),
+    'size': get_tensor_size,
+    'mask': mask
 }
+torch.multiply
 def function_config2func(config):
     if isinstance(config, str):
         return function_name2func[config]
@@ -114,7 +125,7 @@ def function_config2func(config):
         return partial(function_name2func[config.pop('type')], **config)
 
 # Modules
-module_type2class = {}
+@register_module
 class Affine(nn.Module):
     def __init__(self, weight=1.0, bias=0.0):
         super().__init__()
@@ -122,8 +133,6 @@ class Affine(nn.Module):
         self.bias = bias
     def forward(self, input):
         return input*self.weight+self.bias
-for cls in [Affine]:
-    module_type2class[cls.__name__] = cls
 
 # Model
 def get_module(logger, type, **kwargs):
@@ -165,22 +174,26 @@ class Model(nn.ModuleDict):
                     init_config2func(config)(param)
         logger.debug("Initialization finished.")
 
-    def forward(self, batch, processes: list):
-        for i, process in enumerate(processes):
+    def forward(self, batch, processes):
+        if isinstance(processes, list):
+            for i, process in enumerate(processes):
 
-            if PRINT_PROCESS:
-                print(f"-----process {i}-----")
-                print(process)
-                os.makedirs(f"./process_batch/{i}", exist_ok=True)
-                for key, value in batch.items():
-                    if isinstance(value, (torch.Tensor, np.ndarray)):
-                        print(f"  {key}: {list(value.shape)}")
-                        torch.save(value,f'./process_batch/{i}/{key}.pt')
-                    else:
-                        print(f"  {key}: {type(value).__name__}")
+                if PRINT_PROCESS:
+                    print(f"-----process {i}-----", flush=True)
+                    print(process, flush=True)
+                    os.makedirs(f"./process_batch/{i}", exist_ok=True)
+                    for key, value in batch.items():
+                        if isinstance(value, (torch.Tensor, np.ndarray)):
+                            print(f"  {key}: {list(value.shape)}", flush=True)
+                            torch.save(value,f'./process_batch/{i}/{key}.pt')
+                        else:
+                            print(f"  {key}: {type(value).__name__}", flush=True)
 
-            process(self, batch)
-        return batch
+                process(self, batch)
+            return batch
+        else: # callable
+            processes(self, batch)
+            return batch
     def load(self, path, replace={}, strict=True):
         if os.path.isfile(path):
             device = list(self.parameters())[0].device

@@ -250,7 +250,6 @@ class MultiBucketDataLoader(DataLoader):
                 d2b = d2b0
             else:
                 d2b = np.maximum(d2b, d2b0)
-        np.save("./d2b.npy", d2b)
         
         idxs = []
         for ib, batch_size in enumerate(self.batch_sizes):
@@ -260,7 +259,6 @@ class MultiBucketDataLoader(DataLoader):
             idxs += [bucket_idxs[i:i+batch_size] for i in range(0, len(bucket_idxs), batch_size)]
         idxs = np.array(idxs, dtype=object)
         self.rstate.shuffle(idxs)
-        np.save("./idxs.npy", idxs)
         return idxs
 
 dataloader_type2class = {
@@ -302,6 +300,13 @@ class Dataset:
             split = split.astype(bool)
         return split
 
+dataset_type2class = {}
+def register_dataset(name):
+    def register_dataset_cls(cls):
+        assert issubclass(cls, Dataset)
+        dataset_type2class[name] = cls
+        return cls
+    return register_dataset_cls
 
 torch_name2dtype = {
     'int': torch.int,
@@ -314,6 +319,8 @@ numpy_name2dtype = {
     'float': float,
     'bool': bool,
 }
+
+@register_dataset('string')
 class StringDataset(Dataset):
     def __init__(self, logger, name, dfs, 
             padding_value, list=None, path_list=None,
@@ -393,6 +400,7 @@ class ArrayDataset(Dataset):
     def __len__(self):
         return len(self.array)
 
+@register_dataset('ndarray')
 class NdarrayDataset(ArrayDataset):
     def __init__(self, logger, name, dfs, dtype, path, cols=None, atype='torch',split=None,  **kwargs):
         super().__init__(logger, name, dfs, dtype, atype, **kwargs)
@@ -419,6 +427,7 @@ class NdarrayDataset(ArrayDataset):
         self.array = array
         self.size = ['batch_size'] + list(self.array.shape[1:])
 
+@register_dataset('series')
 class SeriesDataset(ArrayDataset):
     def __init__(self, logger, name, dfs, 
         df, dtype, col, atype='torch', split=None, **kwargs):
@@ -431,6 +440,8 @@ class SeriesDataset(ArrayDataset):
             self.array = torch.tensor(array, dtype=self.dtype)
         elif self.type == 'numpy':
             self.array = array.astype(self.dtype)
+
+@register_dataset('dataframe')
 class DataFrameDataset(ArrayDataset):
     def __init__(self, logger, name, dfs,
         df, dtype, cols=None, atype='torch', split=None, **kwargs):
@@ -445,6 +456,7 @@ class DataFrameDataset(ArrayDataset):
         elif self.type == 'numpy':
             self.array = array.astype(self.dtype)
 
+@register_dataset('sparse_square')
 class SparseSquareDataset(Dataset):
     def __init__(self, logger, name, dfs, 
         padding_value, path_length,
@@ -512,6 +524,7 @@ class SparseSquareDataset(Dataset):
         return len(self.lengths)
 
 # いずれSparse..Datasetにmerge予定
+@register_dataset('sparse_square2')
 class SparseSquareDataset2(Dataset):
     def __init__(self, logger, name, dfs, 
         padding_value, path_length,
@@ -596,7 +609,8 @@ class SparseSquareDataset2(Dataset):
 
     def __len__(self):
         return len(self.lengths)
-    
+
+@register_dataset('generate')
 class GenerateDataset(Dataset):
     def __init__(self, logger, name, dfs, feature_size, data_size, **kwargs):
         super().__init__(logger, name, dfs,**kwargs)
@@ -607,15 +621,7 @@ class GenerateDataset(Dataset):
     def __len__(self):
         return self.data_size
 
-dataset_type2class = {
-    'string': StringDataset, 
-    'ndarray': NdarrayDataset,
-    'series': SeriesDataset,
-    'dataframe': DataFrameDataset,
-    'sparse_square': SparseSquareDataset,
-    'sparse_square2': SparseSquareDataset2,
-    'generate': GenerateDataset
-}
+from .datasets.patho import *
 
 def get_dataset(type, **kwargs):
     return dataset_type2class[type](**kwargs)
