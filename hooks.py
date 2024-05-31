@@ -36,7 +36,7 @@ class SaveAlarmHook(AlarmHook):
         model.save_state_dict(path)
 
 class AccumulateHook:
-    def __init__(self, logger, result_dir, names, cols, save_alarm, shape_dims=None,
+    def __init__(self, logger, result_dir, names, save_alarm, cols=None, shape_dims=None,
             checkpoint=None, fname='steps'):
         os.makedirs(result_dir, exist_ok=True)
         self.path_df = result_dir+f"/{fname}.csv"
@@ -46,6 +46,7 @@ class AccumulateHook:
             self.dfs.append(pd.read_csv(checkpoint))
         self.lists = defaultdict(list)
         self.names = names
+        if cols is None: cols = names
         self.cols = cols
         if shape_dims is None:
             shape_dims = [None]*len(self.names)

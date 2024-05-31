@@ -6,6 +6,8 @@ def register_module(cls):
     return cls
 
 from .models2 import *
+from .dataset import get_dataloader
+from .process import get_process
 
 import torch.nn as nn
 for cls in [nn.MSELoss, nn.BCEWithLogitsLoss]:
@@ -23,7 +25,7 @@ from .modules2.graph_transformer import *
 for cls in [GraphAttentionLayer, GraphEncoder, AtomEmbedding]:
     module_type2class[cls.__name__] = cls
 
-from .modules2 import grover, image, unimol, vae
+from .modules2 import grover, image, unimol, unimol2, vae
 
 
 from .modules2.ssl import *

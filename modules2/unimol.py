@@ -8,6 +8,8 @@
 240222 UnimolEmbeddingのapair_emb_typeを追加, 距離にのみgaussian関数をかけられるようにした。
 240301 UnimolPELayerにedge_norm, edge_norm_weightを追加
 240301 UnimolPELayerにedge_pe, edge_embed_dimを追加
+240518 UnimolEncoderの出力のapairs, delta_apairsのpad領域を-torch.infではなく0とするように変更
+    (現状UnimolEncoderの出力はpoolerにしか使っておらず, poolerではマスクしているので影響しないと思われる)
 """
 
 import math
@@ -1011,10 +1013,12 @@ class UnimolEncoder2(nn.Module):
             for layer in self.layers:
                 atoms_emb, apairs = layer(atoms_emb, apairs, bdist)
         apairs = apairs.view(batch_size, -1, length, length).permute(0, 2, 3, 1) # [B, L, L, H]
-
+        apairs.masked_fill_(torch.isinf(apairs), 0.0)
         output = atoms_emb, apairs
         if output_delta_apairs:
-            output += (apairs - input_apairs, )
+            delta_apairs = apairs - input_apairs.permute(0, 2, 3, 1)
+            delta_apairs.masked_fill_(torch.isinf(delta_apairs), 0.0)
+            output += (delta_apairs, )
         return output
 
 @register_module
@@ -1115,118 +1119,5 @@ class DummyAdder(nn.Module):
 
 
         return atoms, chirals, distances, bdist, bonds, nh, is_aromatic, inring
-
-def fill_attn_mask(attn_repr, padding_mask, bsz, n_node, fill_val=float("-inf")):
-    attn_repr = attn_repr.view(bsz, -1, n_node, n_node)
-    attn_repr.masked_fill_(
-        padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool),
-        fill_val,
-    )
-    attn_repr = attn_repr.view(-1, n_node, n_node)
-    return attn_repr
-
-@register_module
-class UnimolCoordHead(nn.Module):
-    def __init__(self, input_size, pad_token):
-        super().__init__()
-        self.ln = nn.LayerNorm(input_size)
-        self.pad_token = pad_token
-        self.proj = nn.Sequential(
-            nn.Linear(input_size, input_size),
-            nn.GELU(),
-            nn.Linear(input_size, 1)
-        )
-    def forward(self, x: torch.Tensor, coord, nodes: torch.Tensor):
-        """
-        Parameters
-        ----------
-        x: [batch_size, length, length, size]
-            Difference of apairs
-        coord: [batch_size, length, 3]
-        nodes: [batch_size, length]
-
-        Returns
-        -------
-        coord: [batch_size, length, 3]
-        
-        """
-
-        x = self.ln(x) # [B, L, L, D]
-        padding_mask = nodes.eq(self.pad_token)
-        x.masked_fill_(padding_mask.unsqueeze(-1).unsqueeze(1), 0)
-        atom_num = torch.sum((1-padding_mask).type_as(x), dim=1).view(-1, 1, 1, 1)
-        attn_probs = self.proj(x) # [B, L, L, D]
-        delta_pos = coord.unsqueeze(1) - coord.unsqeeze(2)
-        coord_update = delta_pos / atom_num * attn_probs
-        pair_coord_mask = (1-padding_mask).unsqueeze(1)*(1-padding_mask).unsqueeze(2)
-        coord_update = coord_update * pair_coord_mask.unsqueeze(-1)
-        coord_update = torch.sum(coord_update, dim=2)
-        return coord + coord_update
-
-@register_module
-class UnimolDistanceHead(nn.Module):
-    def __init__(self, input_size: int):
-        super().__init__()
-        self.proj = nn.Sequential(
-            nn.Linear(input_size, input_size),
-            nn.GELU(),
-            nn.LayerNorm(input_size),
-            nn.Linear(input_size, 1))
-    
-    def forward(self, x: torch.Tensor):
-        """
-        Parameters
-        ----------
-        x: [batch_size, length, length, input_size(nhead)]
-
-
-        
-        """
-        x = self.proj(x).squeeze(-1)
-        x = (x+x.transpose(-1, -2))*0.5
-        return x
-
-@register_module
-class UnimolMLMLoss(nn.Module):
-    def __init__(self, pad_token):
-        super().__init__()
-        self.pad_token = pad_token
-
-    def forward(self, input, target, mask_mask):
-        """
-        input: [B, L, V]
-        target: [B, L]
-        mask_mask: [B, L]
-        
-        """
-        return F.cross_entropy(input[mask_mask], target[mask_mask],
-            ignore_index=self.pad_token, reduction='mean')
-        
-@register_module
-class UnimolCoordLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        pass
-    def forward(self, input, target, mask_mask):
-        """
-        input: [B, L, 3]
-        target: [B, L, 3]
-        mask_mask: [B, L]
-        """
-        return F.smooth_l1_loss(input[mask_mask].view(-1, 3), target[mask_mask].view(-1, 3))
-
-@register_module
-class UnimolDistanceLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, input, target, mask_mask):
-        """
-        input: [B, L, L]
-        target: [B, L, L]
-        mask_mask: [B, L]
-        """
-
-
 
 # transposeについて

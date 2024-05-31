@@ -1,5 +1,7 @@
 import math
 from collections import defaultdict
+
+import numpy as np
 import torch
 from torch import optim 
 from torch.optim import lr_scheduler
@@ -162,10 +164,10 @@ def get_optimizer(type, **kwargs) -> torch.optim.Optimizer:
 
 # Optimizerのwrapper
 class ModelOptimizer:
-    def __init__(self, name, model: Model, optimizer, modules=None,
+    def __init__(self, name, model: Model, optimizer, scheduler=None, modules=None,
                 loss_names = ['loss'], init_weight=None,
                 opt_freq=1, normalize=False, normalize_item=None,
-                clip_grad_norm=None, clip_grad_value=None):
+                clip_grad_norm=None, clip_grad_value=None, filename=None):
         self.name = name
         if modules is not None: 
             self.params = []
@@ -174,6 +176,10 @@ class ModelOptimizer:
         else:
             self.params = model.parameters()
         self.optimizer = get_optimizer(params=self.params, **optimizer)
+        if scheduler is None:
+            self.scheduler = None
+        else:
+            self.scheduler = get_scheduler(self.optimizer, **scheduler)
         self.loss_names = loss_names
         self.opt_freq = opt_freq
         self.normalize = normalize
@@ -184,6 +190,9 @@ class ModelOptimizer:
             self.optimizer.load_state_dict(torch.load(init_weight))
         else:
             self.optimizer.zero_grad()
+        if filename is None:
+            filename = f"optimizer/{self.name}"
+        self.filename = filename
 
     def step(self, batch):
         loss = sum(batch[lname] for lname in self.loss_names)
@@ -193,7 +202,7 @@ class ModelOptimizer:
             loss = loss / batch[self.normalize_item]
         batch[self.name] = loss
         loss.backward()
-        if batch['step']+1 % self.opt_freq == 0: # これで合っている?
+        if (batch['step']+1) % self.opt_freq == 0: # これで合っている?
             if self.clip_grad_norm is not None:
                 torch.nn.utils.clip_grad_norm_(self.params, 
                     max_norm=self.clip_grad_norm, error_if_nonfinite=True)
@@ -201,15 +210,41 @@ class ModelOptimizer:
                 torch.nn.utils.clip_grad_value_(self.params,
                     clip_value=self.clip_grad_value)
             self.optimizer.step()
+            if self.scheduler is not None:
+                self.scheduler.step()
             self.optimizer.zero_grad()
+
+# schedulerは, optimizerで指定したlrに対する相対的な割合を指定する。
+# 最初のepochは0, schedulerが1度stepされるごとに1追加される。
+# batch数ではなく, optimizerがstepされた回数をベースにカウントされる。
+class PlotLR(lr_scheduler._LRScheduler):
+    def __init__(self, optimizer, points, last_epoch=-1):
+        assert all([len(p) == 2 for p in points])
+        self.xs = np.array([p[0] for p in points])
+        self.ys = np.array([p[1] for p in points])
+        self.npoint = len(self.xs)
+        assert np.all(self.xs[:-1] <= self.xs[1:])
+        super().__init__(optimizer, last_epoch=last_epoch)
+
+    def get_lr(self):
+        ibin = np.digitize(self.last_epoch, self.xs)
+        if ibin == 0: factor = self.ys[0]
+        elif ibin == self.npoint: factor = self.ys[-1]
+        else:
+            factor = self.ys[ibin-1] + \
+            (self.ys[ibin]-self.ys[ibin-1]) * \
+            (self.last_epoch-self.xs[ibin-1]) / (self.xs[ibin]-self.xs[ibin-1])
+        return [base_lr * factor
+                for base_lr in self.base_lrs]
+    
+
 
 scheduler_type2class = {
     'multistep': lr_scheduler.MultiStepLR,
     'linear': lr_scheduler.LinearLR,
-    'exponential': lr_scheduler.ExponentialLR
+    'exponential': lr_scheduler.ExponentialLR,
+    'plot': PlotLR
 }
-
-
 
 def get_scheduler(optimizer, type, last_epoch=-1, **kwargs):
     if type in scheduler_type2class:

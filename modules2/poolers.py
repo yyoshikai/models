@@ -4,7 +4,7 @@ import torch.nn.functional as F
 """ 
 現状, lastpoolerは, padding_mask=1の文字がずっと続いた後に0の文字が続くということを前提としている。
 
-
+240518 GraphMeanMaxPoolerのnode_maxのfill_valueが0になっていたので-torch.infに修正
 """
 class MeanPooler(nn.Module):
     def __init__(self):
@@ -156,7 +156,7 @@ class GraphMeanMaxPooler(nn.Module):
         node_padding_mask = padding_mask.T.unsqueeze(-1) # [N, B, 1]
         node_mean = torch.masked_fill(node, node_padding_mask, 0) # [N, B, Fn]
         node_mean = torch.sum(node_mean, dim=0) / (n_node - torch.sum(node_padding_mask, dim=0)) # [B, Fn]
-        node_max = torch.masked_fill(node, node_padding_mask, 0) # [N, B, Fn]
+        node_max = torch.masked_fill(node, node_padding_mask, -torch.inf) # [N, B, Fn]
         node_max = torch.max(node_max, dim=0).values # [B, Fn]
 
         edge_padding_mask = (padding_mask.unsqueeze(-1) | padding_mask.unsqueeze(-2)).unsqueeze(-1) # [B, N, N, 1]

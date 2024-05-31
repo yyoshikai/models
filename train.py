@@ -86,7 +86,7 @@ def main(config, args=None):
     config = subs_vars(config, {"$TIMESTAMP": timestamp()})
     trconfig = config.training
     result_dir = make_result_dir(**trconfig.result_dir)
-    logger = default_logger(result_dir+"/log.txt", trconfig.verbose.loglevel.stream, trconfig.verbose.loglevel.file)
+    logger = default_logger(result_dir+"/log.txt", trconfig.verbose.loglevel.stream or 'info', trconfig.verbose.loglevel.file or 'debug')
     with open(result_dir+"/config.yaml", mode='w') as f:
         yaml.dump(config.to_dict(), f, sort_keys=False)
     if args is not None:
@@ -133,10 +133,11 @@ def main(config, args=None):
                 'optimizer': trconfig.optimizer,
                 'loss_names': trconfig.loss_names,
                 'init_weight': trconfig.get('optimizer_init_weight', None),
-                'opt_freq': trconfig.scheduler.opt_freq,
+                'opt_freq': trconfig.schedule.opt_freq,
                 'normalize': trconfig.regularize_loss.normalize,
                 'clip_grad_norm': trconfig.regularize_loss.get('clip_grad_norm'),
-                'clip_grad_value': trconfig.regularize_loss.get('clip_grad_value')
+                'clip_grad_value': trconfig.regularize_loss.get('clip_grad_value'),
+                'filename': 'optimizer'
             }
         }
         if trconfig.regularize_loss.normalize_batch_size:
@@ -146,9 +147,9 @@ def main(config, args=None):
             optimizers['loss']['normalize_item'] = trconfig.regularize_loss.normalize_item
     else:
         optimizers = trconfig.optimizers
-    optimizers = [
-        ModelOptimizer(name=oname, model=model, **oconfig)
-            for oname, oconfig in optimizers.items()]
+    optimizers = {
+        oname: ModelOptimizer(name=oname, model=model, **oconfig)
+            for oname, oconfig in optimizers.items()}
     
     # process
     train_processes = trconfig.train_loop
@@ -185,10 +186,10 @@ def main(config, args=None):
         raise ValueError
 
     class SchedulerAlarmHook(AlarmHook):
-        def __init__(self, scheduler, **kwargs):
+        def __init__(self, scheduler, optimizer='loss', **kwargs):
             super().__init__(**kwargs)
             scheduler.setdefault('last_epoch', dl_train.step - 1)
-            self.scheduler = get_scheduler(optimizer, **scheduler)
+            self.scheduler = get_scheduler(optimizers[optimizer].optimizer, **scheduler)
         def ring(self, batch, model):
             self.scheduler.step()
     hook_type2class['scheduler_alarm'] = SchedulerAlarmHook
@@ -259,7 +260,10 @@ def main(config, args=None):
                 shutil.rmtree(f"{result_dir}/checkpoints/{self.checkpoint_steps[-1]}/")
             os.makedirs(checkpoint_dir, exist_ok=True)
             model.save_state_dict(f"{result_dir}/models/{batch['step']}")
-            torch.save(optimizer.state_dict(), f"{checkpoint_dir}/optimizer.pth")
+            for optimizer in optimizers.values():
+                path = f"{checkpoint_dir}/{optimizer.filename}.pth"
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                torch.save(optimizer.optimizer.state_dict(), path)
             dl_train.checkpoint(f"{checkpoint_dir}/dataloader_train")
             scores_df.to_csv(checkpoint_dir+"/val_score.csv", index_label="Step")
             save_rstate(f"{checkpoint_dir}/rstate")
@@ -316,9 +320,9 @@ def main(config, args=None):
                 logger.log(level=lconfig.level, msg=msg)
 
             start = time.time()
-            batch = model(batch, processes=train_processes)
+            batch = model(batch, processes=train_processes, logger=logger)
             
-            for optimizer0 in optimizers:
+            for optimizer0 in optimizers.values():
                 optimizer0.step(batch)
             
             batch['time'] = time.time() - start

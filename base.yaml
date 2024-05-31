@@ -38,13 +38,16 @@ training:
   train_loop: R[list]
   val_loop: R[list]
   val_loop_add_train: O(False)[bool]
-  loss_names: list
+
+  # 以下はoptimizers指定時は追加しない。
+  loss_names: list 
   regularize_loss:
     normalize: O(False)[bool]
     clip_grad_norm: O(False)[bool]
     clip_grad_value: O(No gradient clipping)[float]
   schedule:
     opt_freq: R[int]
+
 
   pre_hooks: O[dict]
     hook_name:

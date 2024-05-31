@@ -95,6 +95,27 @@ def mask(x: torch.Tensor, idx: int, direction:str):
     else:
         return x != idx
 
+def norm_mean(x: torch.Tensor, padding_mask: torch.Tensor):
+    """
+    240518 作成
+    unimol task用にcoordの平均を0にすることを想定
+    
+    Parameters
+    ----------
+    x: (float)[B, L, *]
+        xの下は何次元でもよい。
+        Lの方向について平均を取る。
+    padding_mask: (bool)[B, L]
+    """
+    token_mask=  1 - padding_mask.to(torch.int)
+    for d in range(x.dim()-2): token_mask.unsqueeze_(-1)
+    mean = torch.sum(x*token_mask, dim=1, keepdim=True) \
+        / torch.sum(token_mask, dim=1, keepdim=True) # [B, 1, *]
+    return x - mean
+    
+
+
+
 function_name2func = {
     'relu': F.relu,
     'gelu': F.gelu,
@@ -115,7 +136,8 @@ function_name2func = {
     'argmax': torch.argmax,
     'detach': lambda input: input.detach(),
     'size': get_tensor_size,
-    'mask': mask
+    'mask': mask,
+    'norm_mean': norm_mean
 }
 torch.multiply
 def function_config2func(config):
@@ -174,21 +196,27 @@ class Model(nn.ModuleDict):
                     init_config2func(config)(param)
         logger.debug("Initialization finished.")
 
-    def forward(self, batch, processes):
+    def forward(self, batch, processes, logger: logging.Logger=None):
+        show = logger.debug if logger is not None \
+            else partial(print, flush=True)
         if isinstance(processes, list):
             for i, process in enumerate(processes):
 
                 if PRINT_PROCESS:
-                    print(f"-----process {i}-----", flush=True)
-                    print(process, flush=True)
+                    show(f"-----process {i}-----")
+                    show(process)
                     os.makedirs(f"./process_batch/{i}", exist_ok=True)
                     for key, value in batch.items():
                         if isinstance(value, (torch.Tensor, np.ndarray)):
-                            print(f"  {key}: {list(value.shape)}", flush=True)
+                            msg = f"  {key}: {list(value.shape)}[{value.ravel()[0]}]"
+                            if isinstance(value, torch.Tensor):
+                                msg += f"[{torch.sum(torch.isnan(value)).item()}/{value.numel()}]"
+                            else:
+                                msg += f"[{np.sum(np.isnan(value))}/{value.size}]"
                             torch.save(value,f'./process_batch/{i}/{key}.pt')
                         else:
-                            print(f"  {key}: {type(value).__name__}", flush=True)
-
+                            msg = f"  {key}: {type(value).__name__}"
+                        show(msg)
                 process(self, batch)
             return batch
         else: # callable

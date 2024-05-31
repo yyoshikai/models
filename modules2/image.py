@@ -17,7 +17,7 @@ class ResNet18Backbone(nn.Sequential):
         super().__init__(*list(backbone.children())[:-1])
     def forward(self, input: torch.Tensor):
         input = super().forward(input)
-        return input.unsqueeze(-1).unsqueeze(-1)
+        return input.squeeze(-1).squeeze(-1)
 
 
 transform_type2class = {
@@ -88,10 +88,10 @@ class TripletLoss(nn.Module):
         p_dist = 2 - 2*torch.bmm(xp, xp.mT) # [B, Np, Np]
         pn_dist = 2 - 2*torch.bmm(xp, xn.mT) # [B, Np, Np]
         ppn_dist = (self.alpha + p_dist.unsqueeze(3) - pn_dist.unsqueeze(2)) # [B, Np, Np, Np]
-        ppn_mask = ppn_dist <= 0
+        ppn_mask = ppn_dist <= 0 # [B, Np, Np, Np]
         ppn_dist.masked_fill_(ppn_mask, 0)
-        loss = torch.sum(ppn_dist, dim=-1) / torch.max((n_sample - torch.sum(ppn_mask, dim=-1))+self.eps)
-        loss = torch.sum(loss) / bsz**2
+        loss = torch.sum(ppn_dist, dim=-1) / (n_sample - torch.sum(ppn_mask, dim=-1)+self.eps)
+        loss = torch.mean(loss)
         return loss
 
 

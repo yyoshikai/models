@@ -199,7 +199,7 @@ load_pe_pre_hooks = {
     'larger': load_pe_pre_hook_larger
 }
 
-def get_posenc(length: int, emb_size) -> torch.Tensor:
+def get_posenc(length: int, emb_size: int) -> torch.Tensor:
     """
     Returns
     -------
@@ -286,7 +286,7 @@ class PositionalEmbedding(nn.Module):
         self.register_buffer('pe', pe)
         self._register_load_state_dict_pre_hook(load_pe_pre_hooks[load_pe], with_module=True)
     
-    def forward(self, input, position: int=None):
+    def forward(self, input: torch.Tensor, position: int=None):
         """
         Transpose is included here.
 
