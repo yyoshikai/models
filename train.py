@@ -24,17 +24,16 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from tools.notice import notice, noticeerror
 from tools.path import make_result_dir, timestamp
 from tools.logger import default_logger
 from tools.args import load_config2, subs_vars
 from tools.torch import get_params
+from tools.tools import nullcontext
 from models.dataset import get_dataloader
 from models.accumulator import get_accumulator, NumpyAccumulator
 from models.metric import get_metric
 from models.optimizer import get_scheduler
 from models.process import get_process
-from tools.tools import nullcontext
 from models.hooks import AlarmHook, hook_type2class, get_hook
 from models import Model
 from models.models2 import PRINT_PROCESS
@@ -60,25 +59,6 @@ def set_rstate(config):
     if 'cuda' in config:
         torch.cuda.set_rng_state_all(torch.load(config.cuda))
 
-class NoticeAlarmHook(AlarmHook):
-    def __init__(self, logger, studyname=None, **kwargs):
-        super().__init__(logger=logger, **kwargs)
-        if studyname is None:
-            logger.warning("studyname not specified in NoticeAlarm.")
-            studyname =  "(study noname)"
-        self.studyname = studyname
-    def ring(self, batch, model):
-        if 'end' in batch:
-            notice(f"models/train: {self.studyname} finished!")
-        else:
-            message = f"models/train: {self.studyname} "
-            for alarm in self.alarms:
-                message += f"{alarm.target} {batch[alarm.target]} "
-            message += "finished!"
-            notice(message)
-hook_type2class['notice_alarm'] = NoticeAlarmHook
-
-@noticeerror(from_=f"train.py in {os.getcwd()}", notice_end=False)
 def main(config, args=None):
 
     # make training
