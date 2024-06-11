@@ -110,6 +110,7 @@ def main(config, args=None):
     dl_train = get_dataloader(logger=logger, device=DEVICE, **trconfig.data.train)
     dls_val = {name: get_dataloader(logger=logger, device=DEVICE, **dl_val_config)
         for name, dl_val_config in trconfig.data.vals.items()}
+    n_epoch = trconfig.n_epoch or 1
     
     # prepare model
     if 'model_seed' in trconfig:
@@ -128,6 +129,7 @@ def main(config, args=None):
 
     # prepare optimizer
     if 'optimizers' not in trconfig:
+        # For compatibility
         optimizers = {
             'loss': {
                 'optimizer': trconfig.optimizer,
@@ -148,7 +150,8 @@ def main(config, args=None):
     else:
         optimizers = trconfig.optimizers
     optimizers = {
-        oname: ModelOptimizer(name=oname, model=model, **oconfig)
+        oname: ModelOptimizer(name=oname, model=model, dl_train=dl_train, n_epoch=n_epoch,
+            **oconfig)
             for oname, oconfig in optimizers.items()}
     
     # process
@@ -194,10 +197,10 @@ def main(config, args=None):
             self.scheduler.step()
     hook_type2class['scheduler_alarm'] = SchedulerAlarmHook
 
-    # Prepare abortion (Deprecated)
-    abort_step = trconfig.abortion.step or float('inf')
-    abort_epoch = trconfig.abortion.epoch or float('inf')
-    abort_time = trconfig.abortion.time or float('inf')
+    # Prepare abortion
+    abortion: dict = trconfig.abortion
+    abort_time = abortion.pop('time', None)
+    minus_abortion: dict = trconfig.mabortion
 
     # Prepare metrics
     accumulators = [ get_accumulator(logger=logger, **acc_config) for acc_config in trconfig.accumulators ]
@@ -287,22 +290,25 @@ def main(config, args=None):
     # training
     training_start = time.time()
     logger.info("Training started.")
-    with (tqdm(total=None, initial=dl_train.step) if trconfig.verbose.show_tqdm else nullcontext()) as pbar:
-        now = time.time()
-
+    with (tqdm(total=dl_train.get_len()*n_epoch, initial=dl_train.step) if trconfig.verbose.show_tqdm else nullcontext()) as pbar:
+        
         while True:
-
+            now = time.time()
+            # pre hooks
             batch = {'step': dl_train.step, 'epoch': dl_train.epoch}
             for hook in pre_hooks:
                 hook(batch, model)
             
-            if dl_train.step >= abort_step \
-                or now - training_start >= abort_time \
-                or dl_train.epoch >= abort_epoch:
-                logger.warning(f"Use of abort_step, abort_time, abort_epoch is deprecated. Use AbortHook instead.")
+            # abortion
+            for key, value in abortion:
+                if key in batch and batch[key] >= value:
+                    batch['end'] = True
+            for key, value in minus_abortion:
+                if key in batch and batch[key] <= value:
+                    batch['end'] = True
+            if abort_time is not None and now - training_start >= abort_time:
                 batch['end'] = True
-            if 'end' in batch:
-                break
+            if 'end' in batch: break
 
             # training
             batch = dl_train.get_batch(batch)

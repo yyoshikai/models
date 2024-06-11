@@ -48,7 +48,7 @@ training:
   schedule:
     opt_freq: R[int]
 
-
+  n_epoch: O[int] # tqdmの表示, schedulerの設定に使う。それらに使わない場合設定不要。
   pre_hooks: O[dict]
     hook_name:
       type: R[

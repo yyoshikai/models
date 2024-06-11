@@ -1,6 +1,7 @@
 """
 240112 DataLoaderのdatasetsのconfigをupdateするように変更
 240126 NormalDatasetのget_idxsを修正(最初が空の配列になっていた。numpy.splitの仕様)
+240601 load_datasetをやや変更。もしかしたら挙動が変わっているかもしれない。
 """
 
 import sys, os
@@ -51,62 +52,71 @@ class DataLoader:
                 if 'path' in df_config:
                     df_config['filepath_or_buffer'] = df_config.pop('path')
         self.n_dset = len(datasets)
-        self.i_current_idx = 0
-        self.i_dset = 0
-        self.epoch = self.step = 0
-        self.current_idxs = None
         self.rstate = np.random.RandomState(seed=seed)
         self.logger = logger
         self.device = device
-        self.cur_dsets = None
+        self.epoch = self.step = 0
+        
+        # iterating @get_batch
+        self.i_cur_dset = 0
+        self.cur_idxs = None
+        self.i_cur_idx = 0
+
+        # dataset loading @dset
+        self._i_cur_dset = None
+        self._cur_dset = None
+
         # load chekcpoint
         if checkpoint is not None:
             with open(f"{checkpoint}/config.yaml") as f:
                 config = Dict(yaml.load(f, yaml.Loader))
-            self.i_dset = config.i_dset
-            self.i_current_idx = config.i_current_idx
+            self._i_cur_dset = config.i_dset
+            self.i_cur_idx = config.i_current_idx
             self.epoch = config.epoch
             self.step = config.step
             with open(f"{checkpoint}/current_idxs.pkl", 'rb') as f:
-                self.current_idxs = pickle.load(f)
+                self.cur_idxs = pickle.load(f)
             with open(f"{checkpoint}/rstate.pkl", 'rb') as f:
                 self.rstate.set_state(pickle.load(f))
-        self.load_datasets()
-    def load_datasets(self):
-        del self.cur_dsets
-        gc.collect()
-        dfs = {}
-        for df_name, df_config in self.dset_configss[self.i_dset].dfs.items():
-            self.logger.info(f"Loading {df_config.filepath_or_buffer} ...")
-            dfs[df_name] = pd.read_csv(**df_config)
-        self.cur_dsets = {name: get_dataset(logger=self.logger, name=name, dfs=dfs, **dset_config) 
-            for name, dset_config in self.dset_configss[self.i_dset].datasets.items()}
-        del dfs
-        self.i_cur_dsets = self.i_dset
-        
+
+    def dset(self, i):
+        if self._i_cur_dset != i:
+            del self._cur_dset
+            gc.collect()
+            dfs = {}
+            for df_name, df_config in self.dset_configss[i].dfs.items():
+                self.logger.info(f"Loading {df_config.filepath_or_buffer} ...")
+                dfs[df_name] = pd.read_csv(**df_config)
+            self._cur_dset = {name: get_dataset(logger=self.logger, name=name, dfs=dfs, **dset_config) 
+                for name, dset_config in self.dset_configss[i].datasets.items()}
+            del dfs
+            self._i_cur_dset = i
+            self.cur_idxs = None
+        return self._cur_dset
+
     def get_batch(self, batch=None):
-        if self.i_cur_dsets != self.i_dset:
-            self.load_datasets()
-        if self.current_idxs is None:
-            self.current_idxs = self.get_idxs(self.cur_dsets)
-        idx = self.current_idxs[self.i_current_idx].astype(int)
+        dset = self.dset(self.i_cur_dset)
+        if self.cur_idxs is None:
+            self.cur_idxs = self.get_idxs(dset)
+
+        idx = self.cur_idxs[self.i_cur_idx].astype(int)
         if batch is None: batch = {}
         batch['idx'] = idx
-        for dset in self.cur_dsets.values():
-            dset.make_batch(batch, idx, self.device)
+        for d in dset.values():
+            d.make_batch(batch, idx, self.device)
         batch['batch_size'] = len(batch['idx'])
-        self.i_current_idx += 1
+        self.i_cur_idx += 1
         self.step += 1
-        if self.i_current_idx == len(self.current_idxs):
-            self.i_current_idx = 0
-            self.current_idxs = None
-            self.i_dset = (self.i_dset+1)%self.n_dset
-            if self.i_dset == 0:
+        if self.i_cur_idx == len(self.cur_idxs):
+            self.i_cur_idx = 0
+            self.cur_idxs = None
+            self.i_cur_dset = (self.i_cur_dset+1)%self.n_dset
+            if self.i_cur_dset == 0:
                 self.epoch += 1
         return batch
     def __iter__(self):
-        self.epoch = self.i_dset = self.i_current_idx = 0
-        # self.current_idxs = None
+        self.epoch = self.i_cur_dset = self.i_cur_idx = 0
+        # self.cur_idxs = None
         # shuffleをするかどうか?
         while self.epoch == 0:
             yield self.get_batch()
@@ -115,8 +125,8 @@ class DataLoader:
     def checkpoint(self, path_checkpoint):
         os.makedirs(path_checkpoint)
         config = {
-            'i_dset': self.i_dset, 
-            'i_current_idx': self.i_current_idx,
+            'i_dset': self._i_cur_dset, 
+            'i_current_idx': self.i_cur_idx,
             'epoch': self.epoch,
             'step': self.step, 
         }
@@ -125,7 +135,23 @@ class DataLoader:
         with open(f"{path_checkpoint}/rstate.pkl", 'wb') as f:
             pickle.dump(self.rstate.get_state(), f)
         with open(f"{path_checkpoint}/current_idxs.pkl", 'wb') as f:
-            pickle.dump(self.current_idxs, f)
+            pickle.dump(self.cur_idxs, f)
+    def get_len(self, force=False):
+        if self.n_dset == 1:
+            dset = self.dset(0)
+            return len(self.get_idxs(dset))
+        else:
+            if force:
+                length = 0
+                for i in range(len(self.dset_configss)):
+                    dset = self.dset(i)
+                    length += len(self.get_idxs(dset))
+
+                return length
+            else:
+                return None
+
+
 
 class NormalDataLoader(DataLoader):
     def __init__(self, logger, device, datasets, seed, batch_size, checkpoint=None, **kwargs):
@@ -134,8 +160,8 @@ class NormalDataLoader(DataLoader):
         self.batch_size = batch_size
         if not isinstance(datasets, list): datasets = [datasets]
         self.dset_name0 = list(datasets[0].datasets.keys())[0]
-    def get_idxs(self, dsets):
-        dset_size = len(dsets[self.dset_name0])
+    def get_idxs(self, dset):
+        dset_size = len(dset[self.dset_name0])
         idxs = np.arange(dset_size, dtype=int)
         self.rstate.shuffle(idxs)
         idxs = np.split(idxs, range(self.batch_size, dset_size, self.batch_size))

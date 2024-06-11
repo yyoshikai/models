@@ -137,7 +137,8 @@ function_name2func = {
     'detach': lambda input: input.detach(),
     'size': get_tensor_size,
     'mask': mask,
-    'norm_mean': norm_mean
+    'norm_mean': norm_mean,
+    'squeeze': torch.squeeze
 }
 torch.multiply
 def function_config2func(config):

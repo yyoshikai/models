@@ -103,13 +103,43 @@ class TimeAbortHook:
         if time.time() > self.end:
             batch['end'] = True
 
+class EarlyStoppingHook:
+    def __init__(self, logger, result_dir, 
+        target, tolerance, unit, direction=1):
+        """
+        target: スコア
+        unit: toleranceの指標 stepかepoch
+        
+        """
+        self.target = target
+        self.tolerance = tolerance
+        self.direction = direction
+        self.unit = unit
+        self.max_score = -float('inf')
+
+        self.max_time = None
+    
+    def __call__(self, batch, model):
+        if self.target not in batch: return
+        score = batch[self.target]*self.direction
+        if score > self.max_score:
+            self.max_score = score
+            self.max_time = batch[self.unit]
+        else:
+            if batch[self.unit] - self.max_time >= self.tolerance:
+                batch['end'] = True
+        
+
 hook_type2class = {
     'save_alarm': SaveAlarmHook,
     'accumulate': AccumulateHook,
     'abort': AbortHook,
     'step_abort': StepAbortHook,
     'epoch_abort': EpochAbortHook,
-    'time_abort': TimeAbortHook
+    'time_abort': TimeAbortHook,
+    'early_stopping': EarlyStoppingHook
 }
+
 def get_hook(type, **kwargs):
     return hook_type2class[type](**kwargs)
+

@@ -164,7 +164,7 @@ def get_optimizer(type, **kwargs) -> torch.optim.Optimizer:
 
 # Optimizerのwrapper
 class ModelOptimizer:
-    def __init__(self, name, model: Model, optimizer, scheduler=None, modules=None,
+    def __init__(self, name, model: Model, optimizer, dl_train, n_epoch, scheduler=None, modules=None,
                 loss_names = ['loss'], init_weight=None,
                 opt_freq=1, normalize=False, normalize_item=None,
                 clip_grad_norm=None, clip_grad_value=None, filename=None):
@@ -179,7 +179,8 @@ class ModelOptimizer:
         if scheduler is None:
             self.scheduler = None
         else:
-            self.scheduler = get_scheduler(self.optimizer, **scheduler)
+            self.scheduler = get_scheduler(optimizer=self.optimizer,dl_train=dl_train,
+            n_epoch=n_epoch, opt_freq=opt_freq, **scheduler)
         self.loss_names = loss_names
         self.opt_freq = opt_freq
         self.normalize = normalize
@@ -218,10 +219,18 @@ class ModelOptimizer:
 # 最初のepochは0, schedulerが1度stepされるごとに1追加される。
 # batch数ではなく, optimizerがstepされた回数をベースにカウントされる。
 class PlotLR(lr_scheduler._LRScheduler):
-    def __init__(self, optimizer, points, last_epoch=-1):
+    need_train_info = True
+    def __init__(self, optimizer, dl_train, n_epoch, opt_freq,
+            points, unit='step', last_epoch=-1):
+        if unit == 'train': factor = dl_train.get_len(force=True) / opt_freq *n_epoch
+        elif unit == 'epoch': factor = dl_train.get_len(force=True) / opt_freq
+        else: factor = 1.0
+        
         assert all([len(p) == 2 for p in points])
         self.xs = np.array([p[0] for p in points])
         self.ys = np.array([p[1] for p in points])
+        print(self.xs, factor)
+        self.xs*= factor
         self.npoint = len(self.xs)
         assert np.all(self.xs[:-1] <= self.xs[1:])
         super().__init__(optimizer, last_epoch=last_epoch)
@@ -246,9 +255,15 @@ scheduler_type2class = {
     'plot': PlotLR
 }
 
-def get_scheduler(optimizer, type, last_epoch=-1, **kwargs):
+def get_scheduler(optimizer, type, dl_train, n_epoch, opt_freq, 
+        last_epoch=-1, **kwargs):
     if type in scheduler_type2class:
-        return scheduler_type2class[type](optimizer=optimizer, **kwargs)
+        sclass = scheduler_type2class[type]
+        if getattr(sclass, 'need_train_info', False):
+            return sclass(optimizer=optimizer, dl_train=dl_train, n_epoch=n_epoch,
+                opt_freq=opt_freq, **kwargs)
+        else:
+            return sclass(optimizer=optimizer, **kwargs)
     else:
         if type == 'warmup':
             warmup_step = kwargs.pop('warmup')
