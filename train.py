@@ -14,6 +14,7 @@ import importlib
 import time
 import random
 import shutil
+import argparse
 from copy import deepcopy
 
 
@@ -322,5 +323,10 @@ def main(config, args=None):
         hook(batch, model)
 
 if __name__ == '__main__':
-    config = load_config2("", default_configs=['base.yaml'])
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', required=True)
+    args = parser.parse_args()
+    with open(args.config) as f:
+        config = Dict(yaml.load(f, yaml.Loader))
+
     main(config, sys.argv)
