@@ -22,10 +22,9 @@ training:
       # データ名と引数
   model_seed: O(No RNG initialization)[int]
   init_weight: O(No load weight)
-  optimizer:
-    type: R[adam, adamw, radam, lookahead等]
-    # typeごとの引数
-  optimizer_init_weight: O(No load weight)
+  optimizers:
+    optimizer_name:
+      # ModelOptimizerの引数(/workspace/github/models/optimizer.py)
   accumulators: O(No accumulation)[list]
   - type: R[numpy, list等]
     # typeごとの引数
@@ -38,15 +37,6 @@ training:
   train_loop: R[list]
   val_loop: R[list]
   val_loop_add_train: O(False)[bool]
-
-  # 以下はoptimizers指定時は追加しない。
-  loss_names: list 
-  regularize_loss:
-    normalize: O(False)[bool]
-    clip_grad_norm: O(False)[bool]
-    clip_grad_value: O(No gradient clipping)[float]
-  schedule:
-    opt_freq: R[int]
 
   n_epoch: O[int] # tqdmの表示, schedulerの設定に使う。それらに使わない場合設定不要。
   pre_hooks: O[dict]
@@ -65,4 +55,6 @@ training:
   - level: R[warning, info, debug等]
     type: R[value, shape等]
     name: R
+  
+model:
   

@@ -192,7 +192,9 @@ def main(config, args=None):
         def __init__(self, scheduler, optimizer='loss', **kwargs):
             super().__init__(**kwargs)
             scheduler.setdefault('last_epoch', dl_train.step - 1)
-            self.scheduler = get_scheduler(optimizers[optimizer].optimizer, **scheduler)
+            self.scheduler = get_scheduler(optimizers[optimizer].optimizer, 
+                dl_train=dl_train, n_epoch=n_epoch, opt_freq=trconfig.schedule.opt_freq,
+                **scheduler)
         def ring(self, batch, model):
             self.scheduler.step()
     hook_type2class['scheduler_alarm'] = SchedulerAlarmHook
@@ -209,12 +211,17 @@ def main(config, args=None):
     scores_df = pd.read_csv(trconfig.stocks.score_df, index_col="Step") \
         if trconfig.stocks.score_df else  pd.DataFrame(columns=[], dtype=float)
     class ValidationAlarmHook(AlarmHook):
+        def __init__(self, eval_train = False, **kwargs):
+            super().__init__(**kwargs)
+            self.eval_train = eval_train
+
         eval_steps = []
         def ring(self, batch, model):
             step = batch['step']
             if step in self.eval_steps: return
             self.logger.info(f"Validating step{step:7} ...")
-            model.eval()
+            if not self.eval_train:
+                model.eval()
             ## evaluation
             for x in metrics+accumulators+[idx_accumulator]: x.init()
             with torch.no_grad():
@@ -290,7 +297,7 @@ def main(config, args=None):
     # training
     training_start = time.time()
     logger.info("Training started.")
-    with (tqdm(total=dl_train.get_len()*n_epoch, initial=dl_train.step) if trconfig.verbose.show_tqdm else nullcontext()) as pbar:
+    with (tqdm(total=n_epoch*(dl_train.get_len() or 0), initial=dl_train.step) if trconfig.verbose.show_tqdm else nullcontext()) as pbar:
         
         while True:
             now = time.time()
@@ -300,10 +307,10 @@ def main(config, args=None):
                 hook(batch, model)
             
             # abortion
-            for key, value in abortion:
+            for key, value in abortion.items():
                 if key in batch and batch[key] >= value:
                     batch['end'] = True
-            for key, value in minus_abortion:
+            for key, value in minus_abortion.items():
                 if key in batch and batch[key] <= value:
                     batch['end'] = True
             if abort_time is not None and now - training_start >= abort_time:

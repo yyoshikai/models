@@ -151,20 +151,22 @@ class DataLoader:
             else:
                 return None
 
-
-
 class NormalDataLoader(DataLoader):
-    def __init__(self, logger, device, datasets, seed, batch_size, checkpoint=None, **kwargs):
+    def __init__(self, logger, device, 
+            datasets, seed, batch_size, checkpoint=None, drop_last=False, **kwargs):
         super().__init__(logger=logger, datasets=datasets, seed=seed,
             device=device, checkpoint=checkpoint, **kwargs)
         self.batch_size = batch_size
         if not isinstance(datasets, list): datasets = [datasets]
         self.dset_name0 = list(datasets[0].datasets.keys())[0]
+        self.drop_last = drop_last
     def get_idxs(self, dset):
         dset_size = len(dset[self.dset_name0])
         idxs = np.arange(dset_size, dtype=int)
         self.rstate.shuffle(idxs)
         idxs = np.split(idxs, range(self.batch_size, dset_size, self.batch_size))
+        if self.drop_last and len(idxs[-1]) < self.batch_size:
+            idxs = idxs[:-1]
         return idxs
 
 class BucketDataLoader(DataLoader):
@@ -293,8 +295,8 @@ dataloader_type2class = {
     'multibucket': MultiBucketDataLoader
 }
 
-def get_dataloader(type, **kwargs) -> DataLoader:
-    return dataloader_type2class[type](**kwargs)
+def get_dataloader(logger, device, type, **kwargs) -> DataLoader:
+    return dataloader_type2class[type](logger=logger, device=device, **kwargs)
 
 class Dataset:
     def __init__(self, logger, name, dfs, **kwargs):

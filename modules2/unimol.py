@@ -150,8 +150,6 @@ class _UnimolPELayer(nn.Module):
         else:
             self.pe_emb = nn.Parameter(torch.randn((sup_bdist, embed_dim)))
         
-
-
         # feed-forward layer
         dim_feedforward = int(embed_dim*d_ff_factor)
         self.linear1 = nn.Linear(embed_dim, dim_feedforward)
@@ -1121,3 +1119,332 @@ class DummyAdder(nn.Module):
         return atoms, chirals, distances, bdist, bonds, nh, is_aromatic, inring
 
 # transposeについて
+
+class _UnimolDecoderLayer(nn.Module):
+    def __init__(self, embed_dim, num_heads, d_ff_factor=4, dropout=0., 
+        activation='gelu'):
+        """
+        _UnimolLayerに相対的な位置の情報を追加
+        
+        simple_pe: (240213追加) Trueの場合, pe_embを直接embeddingに使う。
+        edge_norm, edge_norm_weight: 240301追加
+            edge_norm = 'pre': edgeのresidual connectionの前にlayernorm
+            edge_norm = 'post': edgeのresidual connectionの後にlayernorm
+            edge_norm = False: 何もしない(通常)
+        
+        """
+        super().__init__()
+        
+        # self attention layer
+        self.num_heads = num_heads
+        head_dim = embed_dim // num_heads
+        assert head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
+        self.in_proj = nn.Linear(embed_dim, 3*embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+        self.p_dropout = dropout
+
+
+        # feed-forward layer
+        dim_feedforward = int(embed_dim*d_ff_factor)
+        self.linear1 = nn.Linear(embed_dim, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, embed_dim)
+        layer_norm_eps = 1e-5
+        self.norm1 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
+        self.norm2 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.activation = function_name2func[activation]
+
+    def forward(self, x: torch.Tensor, edge: torch.Tensor):
+        
+        """
+        Parameters
+        ----------
+        x(float)[L, B, D]
+        edge(float)[B*H, L, L]
+        bdist(long)[L, L, B]
+        
+        B: batch_size
+        L: length
+        D: d_model
+        Dh: head_dim
+        H: num_heads
+        P: sup_bdist(bdist)
+
+        """
+        # set up shape vars
+        num_heads = self.num_heads
+        length, bsz, embed_dim = x.shape
+        head_dim = embed_dim // num_heads
+        
+        # residual connection
+        x_res = x
+
+        # pre layer_norm
+        x = self.norm1(x)
+
+        # attention
+        q, k, v = self.in_proj(x).chunk(3, dim=-1) # [L, B, H*Dh]
+        q = q.contiguous().view(length, bsz * num_heads, head_dim).transpose(0, 1) # [B*H, L, Dh]
+        k = k.contiguous().view(length, bsz * num_heads, head_dim).transpose(0, 1) # [B*H, L, Dh]
+        v = v.contiguous().view(length, bsz * num_heads, head_dim).transpose(0, 1) # [B*H, L, Dh]
+        t = torch.bmm(q, k.transpose(-2, -1)) # [B*H, L, L]
+        
+        dedge = t
+        t = t / math.sqrt(head_dim)
+        t += edge
+        attn_weights = F.softmax(t, dim=-1)
+        if self.p_dropout > 0.0 and self.training:
+            attn_weights = F.dropout(attn_weights, p=self.p_dropout)
+        attn_output = torch.bmm(attn_weights, v)
+        attn_output = attn_output.transpose(0, 1).contiguous().view(length, bsz, embed_dim)
+        attn_output = self.out_proj(attn_output)
+
+        x = attn_output
+        x = x_res+self.dropout1(x)
+
+        # feed-forward
+        x = x + self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(self.norm2(x))))))
+
+        # edge feed-forward
+        t = dedge
+        t = t / math.sqrt(head_dim)
+        edge = edge + t
+
+        return x, edge
+
+
+@register_module
+class UnimolDecoder(nn.Module):
+    def __init__(self, 
+            layer: dict,
+            n_layer, ):
+        super().__init__()
+        self.layers = nn.ModuleList([_UnimolDecoderLayer(**layer) for _ in range(n_layer)])
+
+
+    def forward(self, 
+        atoms_emb: torch.Tensor,
+        apairs: torch.Tensor):
+        """
+        Parameters
+        ----------
+        atoms_emb(float)[length, batch_size, d_model]
+        apairs(float)[batch_size, length, length, num_heads]
+            Representation of atom pairs
+        
+        Returns
+        -------
+        atoms_emb(float)[batch_size, length, d_model]
+        apairs(float)[batch_size, length, length, num_heads]
+            
+        B: batch_size
+        L: length
+        H: num_heads
+        """
+        apairs = apairs.permute(0, 3, 1, 2).contiguous()
+        batch_size, num_heads, length, _ = apairs.shape
+        apairs = apairs.view(batch_size*num_heads, length, length)
+        
+        for layer in self.layers:
+            atoms_emb, apairs = layer(atoms_emb, apairs)
+        apairs = apairs.view(batch_size, -1, length, length).permute(0, 2, 3, 1) # [B, L, L, H]
+        apairs.masked_fill_(torch.isinf(apairs), 0.0)
+        atoms_emb = atoms_emb.permute(1, 0, 2).contiguous() # [B, L, D]
+
+        return  atoms_emb, apairs
+
+@register_module
+class Noiser(nn.Module):
+    def __init__(self, voc_size, mu, sigma):
+        super().__init__()
+        self.voc_size = voc_size
+        self.mu = mu
+        self.sigma = sigma
+
+
+    def forward(self, x: torch.Tensor):
+        """
+        Parameters
+        ----------
+        x: [*]
+        
+        Returns
+        -------
+        x: [*, voc_size]
+        """
+        x = F.one_hot(x, num_classes=self.voc_size).to(torch.float) * self.mu
+        x = x + torch.randn_like(x, device=x.device) * self.sigma
+        return F.softmax(x, dim=-1)
+
+class _UnimolDescriminatorLayer(nn.Module):
+    def __init__(self, embed_dim, num_heads, d_ff_factor=4, dropout=0., activation='gelu'):
+        super().__init__()
+        
+        self.num_heads = num_heads
+        head_dim = embed_dim // num_heads
+        assert head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
+        layer_norm_eps = 1e-5
+        
+        # self attention layer
+        self.in_proj = nn.Linear(embed_dim, 3*embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+        self.p_dropout = dropout
+
+        # multihead attention
+        self.mha_norm = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
+        self.mha_q_proj = nn.Linear(embed_dim, embed_dim)
+        self.mha_kv_proj = nn.Linear(embed_dim, 2*embed_dim)
+        self.mha_out_proj = nn.Linear(embed_dim, embed_dim)
+
+        # feed-forward layer
+        dim_feedforward = int(embed_dim*d_ff_factor)
+        self.linear1 = nn.Linear(embed_dim, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, embed_dim)
+        self.norm1 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
+        self.norm2 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.activation = function_name2func[activation]
+
+
+    def forward(self, node0: torch.Tensor, edge0: torch.Tensor,
+            node1: torch.Tensor, edge1: torch.Tensor):      
+        """
+        Parameters
+        ----------
+        x(float)[L, B, D]
+        edge(float)[B*H, L, L]
+        bdist(long)[L, L, B]
+        
+        B: batch_size
+        L: length
+        D: d_model
+        Dh: head_dim
+        H: num_heads
+        P: sup_bdist(bdist)
+
+        """
+        # set up shape vars
+        num_heads = self.num_heads
+        length, bsz, embed_dim = node0.shape
+        head_dim = embed_dim // num_heads
+        
+        # self attention
+        ## residual connection
+        x_res = node0
+
+        ## pre layer_norm
+        x = self.norm1(node0)
+
+        ## attention
+        q, k, v = self.in_proj(x).chunk(3, dim=-1) # [L, B, H*Dh]
+        q = q.contiguous().view(length, bsz * num_heads, head_dim).transpose(0, 1) # [B*H, L, Dh]
+        k = k.contiguous().view(length, bsz * num_heads, head_dim).transpose(0, 1) # [B*H, L, Dh]
+        v = v.contiguous().view(length, bsz * num_heads, head_dim).transpose(0, 1) # [B*H, L, Dh]
+        t = torch.bmm(q, k.transpose(-2, -1)) / math.sqrt(head_dim) # [B*H, L, L]
+        sa_t = t
+        t = t + edge0
+        attn_weights = F.softmax(t, dim=-1)
+        if self.p_dropout > 0.0 and self.training:
+            attn_weights = F.dropout(attn_weights, p=self.p_dropout)
+        attn_output = torch.bmm(attn_weights, v)
+        attn_output = attn_output.transpose(0, 1).contiguous().view(length, bsz, embed_dim)
+        attn_output = self.out_proj(attn_output)
+
+        ## residual connection
+        x = attn_output
+        x = x_res+self.dropout1(x)
+
+        # multihead attention
+        x_res = x
+        x = self.mha_norm(x)
+
+        q = self.mha_q_proj(x) # [L, B, H*Dh]
+        k, v = self.mha_kv_proj(node1).chunk(2, dim=-1) # [L, B, H*Dh]
+        q = q.contiguous().view(length, bsz * num_heads, head_dim).transpose(0, 1) # [B*H, L, Dh]
+        k = k.contiguous().view(length, bsz * num_heads, head_dim).transpose(0, 1) # [B*H, L, Dh]
+        v = v.contiguous().view(length, bsz * num_heads, head_dim).transpose(0, 1) # [B*H, L, Dh]
+        t = torch.bmm(q, k.transpose(-2, -1)) / math.sqrt(head_dim) # [B*H, L, L]
+        mha_t = t
+        t = t + edge1
+        attn_weights = F.softmax(t, dim=-1)
+        if self.p_dropout > 0.0 and self.training:
+            attn_weights = F.dropout(attn_weights, p=self.p_dropout)
+        attn_output = torch.bmm(attn_weights, v)
+        attn_output = attn_output.transpose(0, 1).contiguous().view(length, bsz, embed_dim)
+        attn_output = self.out_proj(attn_output)
+
+
+        # feed-forward
+        x = x + self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(self.norm2(x))))))
+
+        edge0 = edge0 + sa_t + mha_t
+
+        return x, edge0
+
+@register_module
+class UnimolDescriminator(nn.Module):
+    def __init__(self, layer, n_layer, nhead, d_model,
+             node_voc_size, edge_voc_size,
+             node_pad_token=0):
+        super().__init__()
+        self.node_embedding = nn.Embedding(node_voc_size, d_model)
+        self.edge_embedding = nn.Embedding(edge_voc_size, nhead)
+        self.node_pad_token = node_pad_token
+
+        self.layers0 = nn.ModuleList([_UnimolDescriminatorLayer(**layer) for _ in range(n_layer)])
+        self.layers1 = nn.ModuleList([_UnimolDescriminatorLayer(**layer) for _ in range(n_layer)])
+        self.predictor = nn.Linear(d_model, 1)
+
+    def forward(self, node: torch.Tensor, edge: torch.Tensor,
+            node_emb: torch.Tensor, edge_emb: torch.Tensor):
+        """
+        Parameters
+        ----------
+        node: int[B, L]
+        edge: int[B, L, L]
+        node_emb: float[B, L, Vn]
+        edge_emb: float[B, L, L, Ve]
+        """
+        B, L, node_voc_size = node_emb.shape
+        _, _, _, edge_voc_size = edge_emb.shape
+
+        # Embedding
+        ## 0
+        node0 = self.node_embedding(node) # [B, L, D]
+        edge0 = self.edge_embedding(edge) # [B, L, L, H]
+        H = edge0.shape[3]
+        
+        ## 1
+        node1 = torch.mm(node_emb.view(-1, node_voc_size), 
+            self.node_embedding.weight) \
+            .view(B, L, -1) # [B, L, D]
+        edge1 = torch.mm(edge_emb.view(-1, edge_voc_size), 
+            self.edge_embedding.weight) \
+            .view(B, L, L, -1)
+        node0 = node0.transpose(0, 1) # [L, B, D]
+        node1 = node1.transpose(0, 1) # [L, B, D]
+
+        ## Mask padding
+        padding_mask = node == self.node_pad_token # [B, L]
+        edge0.masked_fill_(padding_mask.view(B, 1, L, 1), -torch.inf) # [B, L, L, H]
+        edge1.masked_fill_(padding_mask.view(B, 1, L, 1), -torch.inf) # [B, L, L, H]
+
+        ## Shape
+        edge0 = edge0.permute(0, 3, 1, 2).contiguous().view(B*H, L, L)
+        edge1 = edge1.permute(0, 3, 1, 2).contiguous().view(B*H, L, L)
+
+        # Layers
+        for layer0, layer1 in zip(self.layers0, self.layers1):
+            (node0, edge0), (node1, edge1) = \
+                layer0(node0, edge0, node1, edge1), \
+                layer1(node1, edge1, node0, edge0)
+        
+        # Prediction
+        padding_mask = (node != self.node_pad_token).to(torch.float).T # [L, B]
+        x = torch.sum(node1*padding_mask.unsqueeze(2), dim=0) / torch.sum(padding_mask, dim=0).unsqueeze(1) # [B, D]
+        x = self.predictor(x).view(B) # [B]
+        return x

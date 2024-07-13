@@ -2,6 +2,8 @@
 240119作成
 Unimolのdecoder
 
+その後 いつか不明(~240628)だが, UnimolTask用に利用
+
 TODO: rngのseedをload_state_dictに保存できるようにする
 """
 import math

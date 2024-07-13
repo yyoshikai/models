@@ -2,6 +2,8 @@ import functools
 
 module_type2class = {}
 def register_module(cls):
+    if cls.__name__ in module_type2class:
+        raise ValueError(f"{cls.__name__} was registered for multiple times.")
     module_type2class[cls.__name__] = cls
     return cls
 
@@ -25,7 +27,7 @@ from .modules2.graph_transformer import *
 for cls in [GraphAttentionLayer, GraphEncoder, AtomEmbedding]:
     module_type2class[cls.__name__] = cls
 
-from .modules2 import grover, image, unimol, unimol2, vae
+from .modules2 import grover, image, unimol, unimol2, vae, criterion
 
 
 from .modules2.ssl import *

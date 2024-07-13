@@ -1,7 +1,10 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torchvision
 from torchvision import transforms as T
+from PIL import ImageOps
+
 
 from .. import register_module
 
@@ -20,12 +23,64 @@ class ResNet18Backbone(nn.Sequential):
         return input.squeeze(-1).squeeze(-1)
 
 
+class RandomSolarization(object):
+    """Implementation of random image Solarization.
+
+    Utilizes the integrated image operation `solarize` from Pillow. Solarization
+    inverts all pixel values above a threshold (default: 128).
+
+    Attributes:
+        probability:
+            Probability to apply the transformation
+        threshold:
+            Threshold for solarization.
+    """
+
+    def __init__(self, p: float = 0.5, threshold: int = 128):
+        self.prob = p
+        self.threshold = threshold
+
+    def __call__(self, sample):
+        """Solarizes the given input image
+
+        Args:
+            sample:
+                PIL image to which solarize will be applied.
+
+        Returns:
+            Solarized image or original image.
+
+        """
+        prob = np.random.random_sample()
+        if prob < self.prob:
+            # return solarized image
+            return ImageOps.solarize(sample, threshold=self.threshold)
+        # return original image
+        return sample
+
 transform_type2class = {
     cls.__name__: cls for cls in 
-    [T.ToTensor, T.CenterCrop, T.Normalize]
+    [T.ToTensor, 
+     T.CenterCrop, 
+     T.Normalize, 
+
+     # augmentation
+     T.RandomHorizontalFlip,
+     T.RandomGrayscale,
+     T.ColorJitter,
+     T.GaussianBlur,
+     T.RandomRotation,
+     T.RandomResizedCrop,
+     RandomSolarization]
 }
 def get_transform(type, **kwargs):
-    return transform_type2class[type](**kwargs)
+    if type == 'RandomApply':
+        return T.RandomApply(
+            transforms = [get_transform(**t) for t in kwargs['transforms']],
+            p=kwargs['p']
+        )
+    else:
+        return transform_type2class[type](**kwargs)
 
 @register_module
 class Transform(nn.Module): # Wrap by nn.Module
@@ -67,6 +122,33 @@ class TCCLRLoss(nn.Module):
         loss = torch.sum(softmax) - numer
         loss /= bsz*3
         return loss
+    
+
+@register_module
+class TCCLRLoss2(nn.Module):
+    def __init__(self, tau: float):
+        super().__init__()
+        self.tau = tau
+    
+    def forward(self, latent: torch.Tensor):
+        """
+        latent: [B*3, D]
+        
+        """
+        bsz, _ = latent.shape
+        assert bsz % 3 == 0
+        bsz = int(bsz/3)
+
+        latent = latent / torch.norm(latent, dim=-1, keepdim=True) # [B*3, D]
+        sim = torch.mm(latent, latent.T) / self.tau # [B*3, B*4]
+        sim_masked = off_diag(sim)
+        softmax = torch.log(torch.sum(torch.exp(sim_masked), axis=1))
+
+        numer = torch.sum(torch.diag(sim[:bsz, bsz:bsz*2])) + torch.sum(torch.diag(sim[bsz:bsz*2, :bsz]))
+        numer += torch.sum(off_diag(sim[bsz*2:, bsz*2:])) / (bsz-1)
+        loss = torch.sum(softmax) - numer / self.tau
+        loss /= bsz*3
+        return loss
 
 class TripletLoss(nn.Module):
     def __init__(self, alpha: float, eps):
@@ -94,7 +176,6 @@ class TripletLoss(nn.Module):
         loss = torch.mean(loss)
         return loss
 
-
 @register_module
 class TCTripletLoss(nn.Module):
     def __init__(self, n_patch_per_wsi, alpha, eps=1e-9):
@@ -111,3 +192,85 @@ class TCTripletLoss(nn.Module):
 
         loss = self.criterion(t_latent, c_latent) + self.criterion(c_latent, t_latent)
         return loss
+
+# Automated acquisition of explainable knowledge from unannotated histopathology images
+# の再現
+"""
+以下適当にしたメモ
+・padding_mode='reflect'か?
+・初期値はtfだとweight=glorot uniform, bias=zerosがデフォ
+・activationはなしとした。
+    tfのデフォルトではなし。
+・dropout=0.1とした。
+
+"""
+@register_module
+class ImageAutoEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.input0 = nn.Sequential(
+            nn.Conv2d(3, 6, 3, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+        )
+        self.input1 = nn.Sequential(
+            nn.Conv2d(3, 6, 3, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Conv2d(6, 12, 3, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+        )
+        self.input2 = nn.Sequential(
+            nn.Conv2d(3, 6, 3, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Conv2d(6, 12, 3, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Conv2d(12, 24, 3, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+        )
+        self.encoder = nn.Sequential(
+            nn.Conv2d(45, 32, 3, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Conv2d(32, 32, 4, stride=4),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Conv2d(32, 32, 4, stride=4)
+        )
+        self.medium = nn.Sequential(
+            nn.Linear(2048, 2048), 
+            nn.Dropout(0.1)
+        )
+        self.upsampler = nn.Sequential(
+            nn.Upsample(scale_factor=4), 
+            # ここだけscale_factorより大きい方が良いと思った。
+            nn.Conv2d(32, 32, 7, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=4), 
+            nn.Conv2d(32, 32, 7, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Conv2d(32, 45, 7, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+        )
+        self.decoder = nn.Sequential(
+            nn.Conv2d(45, 6, 3, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Conv2d(6, 12, 3, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Conv2d(12, 24, 3, padding='same', padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Conv2d(24, 3, 3, padding='same', padding_mode='reflect'),
+        )
+
+
+    def forward(self, x: torch.Tensor):
+        """
+        x: torch.Tensor[B, 3, 128, 128] 
+        """
+        B = x.shape[0]
+        x = torch.cat([x, self.input0(x), self.input1(x), self.input2(x)], dim=1) # [B, 45, 128, 128]
+        x = self.encoder(x) # [B, 32, 8, 8]
+        z = x.reshape(B, -1) # [B, 2048]
+        x = self.medium(z) # [B, 2048]
+        x = x.reshape(B, 32, 8, 8)
+        x = self.upsampler(x)
+        x = self.decoder(x)
+        
+        return x, z

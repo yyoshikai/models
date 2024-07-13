@@ -1,7 +1,5 @@
 """
 LatentTransformerのfeat_evalとgenerationを統合
-
-# TODO: ディレクトリ構造を変更する。
 """
 import sys, os
 os.environ.setdefault('TOOLS_DIR', "/workspace")
@@ -116,10 +114,16 @@ def main(config):
             if isinstance(accum, NumpyAccumulator):
                 accummed = accummed[idxs]
                 n, size = accummed.shape
-                with open(apath+'.csv', 'w') as f:
-                    f.write(','.join([str(i) for i in range(size)])+'\n')
-                    for r in range(n):
-                        f.write(','.join(str(f) for f in accummed[r])+'\n')
+                save_type = config.save.get(aname, 'csv')
+                if save_type == 'csv':
+                    with open(apath+'.csv', 'w') as f:
+                        f.write(','.join([str(i) for i in range(size)])+'\n')
+                        for r in range(n):
+                            f.write(','.join(str(f) for f in accummed[r])+'\n')
+                elif save_type == 'npy':
+                    np.save(apath+'.npy', accummed)
+                else:
+                    raise ValueError(f"Unsupported save_type: {save_type}")
             elif isinstance(accum, ListAccumulator):
                 accummed = [accummed[i] for i in idxs]
                 with open(apath+'.pkl', 'wb') as f:

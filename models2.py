@@ -131,6 +131,7 @@ function_name2func = {
     'mean': torch.mean,
     'mul': torch.mul,
     'log_softmax': F.log_softmax,
+    'softmax': F.softmax,
     'softplus': F.softplus,
     'transpose': torch.transpose,
     'argmax': torch.argmax,
@@ -138,7 +139,8 @@ function_name2func = {
     'size': get_tensor_size,
     'mask': mask,
     'norm_mean': norm_mean,
-    'squeeze': torch.squeeze
+    'squeeze': torch.squeeze,
+    'repeat_interleave': torch.repeat_interleave
 }
 torch.multiply
 def function_config2func(config):

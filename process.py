@@ -91,7 +91,7 @@ class FunctionProcess(CallProcess):
         return f"ForwardProcess(input={self.input}, output={self.output}, kwargs={self.kwargs}, function={self.function})"
 
 class IterateProcess(Process):
-    def __init__(self, length, processes, i_name='iterate_i'):
+    def __init__(self, length, processes, i_name='iterate_i', end_name=None):
         """
         Parameters
         ----------
@@ -105,13 +105,13 @@ class IterateProcess(Process):
         self.length = length
         self.processes = [get_process(**process) for process in processes]
         self.i_name = i_name
+        self.end_name = end_name
     def __call__(self, model, batch):
         if isinstance(self.length, int): length = self.length
         else: length = batch[self.length]
         for i in range(length):
             batch[self.i_name] = i
             for i, process in enumerate(self.processes):
-
                 if PRINT_PROCESS:
                     # Show parameters
                     print(f"---process {i}---")
@@ -120,16 +120,23 @@ class IterateProcess(Process):
                             print(f"  {key}: {list(value.shape)}")
                         else:
                             print(f"  {key}: {type(value).__name__}")
-                
-
                 process(model, batch)
-
+            if self.end_name is not None and batch.get(self.end_name, False):
+                break
 process_type2class = {
     'forward': ForwardProcess,
     'function': FunctionProcess,
     'iterate': IterateProcess,
 }
-def get_process(type='forward', **kwargs):
+def get_process(type=None, **kwargs):
+    """
+    type: Noneの場合, kwargsにmoduleがあればforward, functionがあればfunction, processesがあればiterateとなる。
+    """
+    if type is None:
+        if 'module' in kwargs: type = 'forward'
+        elif 'function' in kwargs: type = 'function'
+        elif 'processes' in kwargs: type = 'iterate'
+        else: raise ValueError
     return process_type2class[type](**kwargs)
 def get_process_from_config(config):
     return get_process(**config)

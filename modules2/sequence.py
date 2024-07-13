@@ -898,15 +898,25 @@ class GreedyDecoder(nn.Module):
     def init(self, batch_size):
         cur_input = torch.full((batch_size, 1), fill_value=self.start_token,
             dtype=torch.long, device=self._device_param.device)
+        self.is_decoded = torch.full((batch_size, ), fill_value=False, 
+            dtype=torch.bool, device=self._device_param.device)
         return cur_input, []
-    def add(self, cur_proba, outs):
+    def add(self, cur_proba, outs, return_end=False):
         """
         cur_proba: (float)[batch_size, 1, n_token]
         outs: list[torch.tensor[batch_size, 1]]
         """
         cur_input = torch.argmax(cur_proba, dim=-1)
         outs.append(cur_input)
-        return cur_input, outs
+        output = cur_input, outs
+        if return_end:
+            self.is_decoded = torch.logical_or(self.is_decoded, cur_input == self.end_token)
+            if torch.all(self.is_decoded):
+                output += (True, )
+            else:
+                output += (False, )
+
+        return output
 
     def sample_add(self, cur_proba, outs):
         """

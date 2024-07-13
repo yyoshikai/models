@@ -164,7 +164,8 @@ def get_optimizer(type, **kwargs) -> torch.optim.Optimizer:
 
 # Optimizerのwrapper
 class ModelOptimizer:
-    def __init__(self, name, model: Model, optimizer, dl_train, n_epoch, scheduler=None, modules=None,
+    def __init__(self, name, model: Model, dl_train, n_epoch, 
+                optimizer, scheduler=None, modules=None,
                 loss_names = ['loss'], init_weight=None,
                 opt_freq=1, normalize=False, normalize_item=None,
                 clip_grad_norm=None, clip_grad_value=None, filename=None):
@@ -196,6 +197,7 @@ class ModelOptimizer:
         self.filename = filename
 
     def step(self, batch):
+        
         loss = sum(batch[lname] for lname in self.loss_names)
         if self.normalize:
             loss = loss / loss.detach()
@@ -203,6 +205,7 @@ class ModelOptimizer:
             loss = loss / batch[self.normalize_item]
         batch[self.name] = loss
         loss.backward()
+
         if (batch['step']+1) % self.opt_freq == 0: # これで合っている?
             if self.clip_grad_norm is not None:
                 torch.nn.utils.clip_grad_norm_(self.params, 
@@ -252,6 +255,7 @@ scheduler_type2class = {
     'multistep': lr_scheduler.MultiStepLR,
     'linear': lr_scheduler.LinearLR,
     'exponential': lr_scheduler.ExponentialLR,
+    'cosine_annealing': lr_scheduler.CosineAnnealingLR,
     'plot': PlotLR
 }
 
