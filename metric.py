@@ -115,6 +115,29 @@ class MAEMetric(BinaryMetric):
 class R2Metric(BinaryMetric):
     def calc_score(self, y_true, y_score):
         return r2_score(y_true=y_true, y_pred=y_score)
+    
+class GANAUROCMetric(Metric):
+    def __init__(self, logger, name, real, fake):
+        super().__init__(logger, name)
+        self.real_name = real
+        self.fake_name = fake
+    def init(self):
+        self.real_preds = []
+        self.fake_preds = []
+    def add(self, batch):
+        self.real_preds.append(batch[self.real_name].cpu().numpy())
+        self.fake_preds.append(batch[self.fake_name].cpu().numpy())
+    def calc(self, scores):
+        reals = np.concatenate(self.real_preds)
+        fakes = np.concatenate(self.fake_preds)
+        real_targets = np.ones_like(reals, dtype=int)
+        fake_targets = np.zeros_like(fakes, dtype=int)
+        score = roc_auc_score(
+            np.concatenate([real_targets, fake_targets]),
+            np.concatenate([reals, fakes])
+        )
+        scores[self.name] = score
+        return scores
 
 class MeanMetric(Metric):
     def init(self):
@@ -165,6 +188,7 @@ metric_type2class = {
     'rmse': RMSEMetric,
     'mae': MAEMetric,
     'r2': R2Metric,
+    'gan_auroc': GANAUROCMetric,
     'perfect': PerfectAccuracyMetric,
     'partial': PartialAccuracyMetric,
 }

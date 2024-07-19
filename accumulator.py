@@ -18,7 +18,7 @@ class NumpyAccumulator:
         self.input = input
         if org_type in {'tensor', 'torch', 'torch.tensor'}:
             self.converter = lambda x: x.cpu().numpy()
-        elif org_type in {'np.array', 'np.ndarray', 'numpy', 'numpy.array', 'numpy.ndarray'}:
+        elif org_type in {'np', 'np.array', 'np.ndarray', 'numpy', 'numpy.array', 'numpy.ndarray'}:
             self.converter = EMPTY
         else:
             raise ValueError(f"Unsupported type of config.org_type: {org_type} in NumpyAccumulator")

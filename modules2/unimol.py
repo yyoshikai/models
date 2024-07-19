@@ -1124,14 +1124,7 @@ class _UnimolDecoderLayer(nn.Module):
     def __init__(self, embed_dim, num_heads, d_ff_factor=4, dropout=0., 
         activation='gelu'):
         """
-        _UnimolLayerに相対的な位置の情報を追加
-        
-        simple_pe: (240213追加) Trueの場合, pe_embを直接embeddingに使う。
-        edge_norm, edge_norm_weight: 240301追加
-            edge_norm = 'pre': edgeのresidual connectionの前にlayernorm
-            edge_norm = 'post': edgeのresidual connectionの後にlayernorm
-            edge_norm = False: 何もしない(通常)
-        
+        ~240718 UnimolPELayerより派生。
         """
         super().__init__()
         

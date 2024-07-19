@@ -134,6 +134,7 @@ function_name2func = {
     'softmax': F.softmax,
     'softplus': F.softplus,
     'transpose': torch.transpose,
+    'permute': torch.permute,
     'argmax': torch.argmax,
     'detach': lambda input: input.detach(),
     'size': get_tensor_size,
@@ -204,7 +205,6 @@ class Model(nn.ModuleDict):
             else partial(print, flush=True)
         if isinstance(processes, list):
             for i, process in enumerate(processes):
-
                 if PRINT_PROCESS:
                     show(f"-----process {i}-----")
                     show(process)

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .. import register_module
 
 @register_module
@@ -16,3 +17,23 @@ class GANCriterion(nn.Module):
         return self.criterion(score, target)
 
 
+# 240718 graph autoencoderのため作成
+@register_module
+class EdgeCriterion(nn.Module):
+    def __init__(self, node_pad_token, reduction='sum'):
+        super().__init__()
+        self.node_pad_token = node_pad_token
+        self.reduction = reduction
+    
+    def forward(self, input, target, nodes):
+        """
+        input: [B, L, L, D]
+        target: [B, L, L]
+        nodes: [B, L]
+        
+        """
+        B, L, _, D = input.shape
+        pad_mask = nodes != self.node_pad_token
+        pad_mask = torch.logical_and(pad_mask.unsqueeze(2), pad_mask.unsqueeze(1))
+        return F.cross_entropy(input[pad_mask], target[pad_mask].to(torch.long), 
+            reduction=self.reduction)

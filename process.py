@@ -141,6 +141,22 @@ def get_process(type=None, **kwargs):
 def get_process_from_config(config):
     return get_process(**config)
 
+def get_processes(config):
+    if isinstance(config, list):
+        processes = [get_process(**process) for process in config]
+    elif isinstance(config, dict):
+        if 'path' in config: # 関数を指定する場合
+            train_loop_module = importlib.import_module(name='train_loop_module', package=config['path'])
+            processes = train_loop_module.__getattribute__(config['function'])
+        else: # dictでprocessを指定する場合
+            config = list(config.values())
+            train_times = [process.pop('order') for process in config]
+            config = [config[i] for i in np.argsort(train_times)]
+            processes = [get_process(**process) for process in config]
+    else:
+        raise ValueError
+    return processes
+
 N_LOOP_MODULE = 0
 def build_processes(configs, train_configs=None):
     if isinstance(configs, list):
