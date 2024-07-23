@@ -1,5 +1,5 @@
 import sys, os
-"""ver 12 - 4
+"""
 ・共通のModelを使うように変更
 ・train, valは必ず複数セット
 
@@ -34,12 +34,11 @@ from models.accumulator import get_accumulator, NumpyAccumulator
 from models.metric import get_metric
 from models.optimizer import get_scheduler
 from models.process import get_process, get_processes
-from tools.tools import nullcontext
+from tools.tools import nullcontext, load_module
 from models.hooks import AlarmHook, hook_type2class, get_hook
 from models import Model
 from models.models2 import PRINT_PROCESS
 from models.optimizer import ModelOptimizer
-from models.grad_calculator import get_grad_calculator
 
 def save_rstate(dirname):
     os.makedirs(dirname, exist_ok=True)
@@ -128,62 +127,35 @@ def main(config, args=None):
     logger.info(f"Model size(bit): {bit_size}")
     model.to(DEVICE)
 
-    # prepare optimizer & losses
-    if 'grad_calculators' in trconfig:
-        grad_calculators_is_defined = True
-        gc0 = deepcopy(trconfig.grad_calculators)
-        if isinstance(gc0, dict):
-            grad_calculators = []
-            for key, value in gc0:
-                if value is None: value = {}
-                value.update({'loss_name': key})
-        elif isinstance(gc0, list):
-            grad_calculators = []
-            for gc in gc0:
-                if isinstance(gc, (str, list)):
-                    gc = {'loss_name': gc}
-                grad_calculators.append(gc)
-        elif isinstance(gc0, str):
-            grad_calculators = [{'loss_name': gc0}]
-    else:
-        grad_calculators_is_defined = False
-        grad_calculators = []
+    # prepare optimizer
     if 'optimizers' not in trconfig:
         # For compatibility
-        optimizers0 = {
+        optimizers = {
             'loss': {
                 'optimizer': trconfig.optimizer,
+                'loss_names': trconfig.loss_names,
                 'init_weight': trconfig.get('optimizer_init_weight', None),
                 'opt_freq': trconfig.schedule.opt_freq,
+                'normalize': trconfig.regularize_loss.normalize,
                 'clip_grad_norm': trconfig.regularize_loss.get('clip_grad_norm'),
                 'clip_grad_value': trconfig.regularize_loss.get('clip_grad_value'),
                 'filename': 'optimizer'
             }
         }
-        gc_base = {'normalize': bool(trconfig.regularize_loss.normalize)}
         if trconfig.regularize_loss.normalize_batch_size:
             assert trconfig.regularize_loss.normalize_item is None
-            gc_base['normalize_item'] = 'batch_size'
+            optimizers['loss']['normalize_item'] = 'batch_size'
         elif trconfig.regularize_loss.normalize_item:
-            gc_base['normalize_item'] = trconfig.regularize_loss.normalize_item
-        grad_calculators = [dict(gc_base, loss_name=trconfig.loss_names)]
+            optimizers['loss']['normalize_item'] = trconfig.regularize_loss.normalize_item
     else:
-        optimizers0 = {}
-        for key, value in trconfig.optimizers.items():
-            if not grad_calculators_is_defined:
-                loss_names = value.pop('loss_names', ['loss'])
-                gc_base = {'normalize': value.pop('normalize', False), 
-                    'normalize_item': value.pop('normalize_item', None)}
-                grad_calculators += [
-                    dict(gc_base, loss_name=loss_names)]
-            optimizers0[key] = value
-
+        optimizers = trconfig.optimizers
     optimizers = {
-        oname: ModelOptimizer(name=oname, model=model, dl_train=dl_train, n_epoch=n_epoch, **oconfig)
-            for oname, oconfig in optimizers0.items()}
-    grad_calculators = [get_grad_calculator(**p) for p in grad_calculators]
-
+        oname: ModelOptimizer(name=oname, model=model, dl_train=dl_train, n_epoch=n_epoch,
+            **oconfig)
+            for oname, oconfig in optimizers.items()}
+    
     # process
+
     train_processes = get_processes(trconfig.train_loop)
     val_processes = trconfig.val_loop
     if isinstance(val_processes, list):
@@ -191,9 +163,9 @@ def main(config, args=None):
         if trconfig.val_loop_add_train: 
             val_processes = train_processes + val_processes
     elif isinstance(val_processes, dict):
-        if 'path' in train_processes: # 関数を指定する場合
-            val_loop_module = importlib.import_module(name='val_loop_module', package=val_processes.path)
-            val_processes = val_loop_module.__getattribute__(val_processes.function)
+        if 'path' in val_processes: # 関数を指定する場合
+            module = load_module(val_processes['path'])
+            val_processes = module.__getattribute__(val_processes.function)
         else:
             val_processes = list(val_processes.values())
             if trconfig.val_loop_add_train: 
@@ -351,9 +323,6 @@ def main(config, args=None):
             start = time.time()
             batch = model(batch, processes=train_processes, logger=logger)
             
-            for grad_calculator in grad_calculators:
-                grad_calculator(batch)
-
             for optimizer0 in optimizers.values():
                 optimizer0.step(batch)
             

@@ -9,10 +9,13 @@ def register_module(cls):
 
 from .models2 import *
 from .dataset import get_dataloader
-from .process import get_process
+from .process import get_process, get_processes
 
 import torch.nn as nn
 for cls in [nn.MSELoss, nn.BCEWithLogitsLoss]:
+    module_type2class[cls.__name__] = cls
+
+for cls in [nn.Linear, nn.ReLU, nn.GELU, nn.LayerNorm, nn.BatchNorm1d]:
     module_type2class[cls.__name__] = cls
 
 from .modules2.sequence import *

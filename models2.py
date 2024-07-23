@@ -169,8 +169,13 @@ def get_module(logger, type, **kwargs):
         if key in args:
             uargs[key] = kwargs.pop(key)
     if len(kwargs) > 0:
-        logger.warning(f"Unknown kwarg in {cls.__name__}: {kwargs}")
+        msg = f"get_module: Unknown kwarg in {cls.__name__}: {kwargs}"
+        if logger is None:
+            print("[WARNING]"+msg, flush=True)
+        else:
+            logger.warning(msg)
     return cls(**uargs)
+
 class Model(nn.ModuleDict):
     def __init__(self, logger: logging.Logger, modules: dict, use_modules:list=None,
             omit_modules: list=None, seed=None, init: dict = {}):

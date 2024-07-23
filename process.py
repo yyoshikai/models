@@ -2,6 +2,7 @@
 240402 CallProcess.__init__のoutput=0のときoutputを無視する
 
 """
+import sys, os
 import importlib
 
 import torch
@@ -9,7 +10,7 @@ import numpy as np
 import torch.nn as nn
 
 from .models2 import function_config2func, PRINT_PROCESS
-
+from tools.tools import load_module
 
 class Process:
     def __init__(self):
@@ -146,8 +147,8 @@ def get_processes(config):
         processes = [get_process(**process) for process in config]
     elif isinstance(config, dict):
         if 'path' in config: # 関数を指定する場合
-            train_loop_module = importlib.import_module(name='train_loop_module', package=config['path'])
-            processes = train_loop_module.__getattribute__(config['function'])
+            module = load_module(config['path'])
+            processes = module.__getattribute__(config['function'])
         else: # dictでprocessを指定する場合
             config = list(config.values())
             train_times = [process.pop('order') for process in config]

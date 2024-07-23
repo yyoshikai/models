@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from ..models2 import init_config2func, function_config2func, register_module
+from ..models2 import init_config2func, function_config2func, register_module, get_module
 
 class Affine(nn.Module):
     def __init__(self, weight, bias, input_size):
@@ -101,3 +101,12 @@ class Tunnel(nn.Module):
         return next_input
     def __len__(self):
         return len(self.layers)
+    
+# Tunnelと同じだが, 公式と同じ書き方の方が良い気がした。
+@register_module
+class Sequential(nn.Sequential):
+    def __init__(self, args):
+        layers = []
+        for arg in args:
+            layers.append(get_module(None, **arg))
+        super().__init__(*layers)

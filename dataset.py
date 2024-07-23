@@ -8,6 +8,7 @@ import sys, os
 import inspect
 import itertools
 from copy import deepcopy
+import math
 
 import yaml
 import gc
@@ -484,6 +485,24 @@ class DataFrameDataset(ArrayDataset):
         elif self.type == 'numpy':
             self.array = array.astype(self.dtype)
 
+@register_dataset('bit')
+class BitDataset(Dataset):
+    def __init__(self, logger, name, dfs, 
+            path, size, dtype='long'):
+        super().__init__(logger, name, dfs)
+        self.size = size
+        self.packed_array = np.load(path)
+        assert len(self.packed_array[0]) == math.ceil(size/8)
+        self.dtype = torch_name2dtype[dtype]
+    def make_batch(self, batch, idx, device):
+        packed_data = self.packed_array[idx]
+        data = np.unpackbits(packed_data, axis=1)
+        batch[self.name] = torch.tensor(data, dtype=self.dtype, device=device)
+        return batch
+        
+    def __len__(self):
+        return len(self.packed_array)
+
 @register_dataset('sparse_square')
 class SparseSquareDataset(Dataset):
     def __init__(self, logger, name, dfs, 
@@ -651,5 +670,5 @@ class GenerateDataset(Dataset):
 
 from .datasets.patho import *
 
-def get_dataset(type, **kwargs):
+def get_dataset(type, **kwargs) -> Dataset:
     return dataset_type2class[type](**kwargs)

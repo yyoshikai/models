@@ -17,7 +17,7 @@ from tools.logger import default_logger
 from tools.args import load_config2
 from tools.notice import notice
 from models.models2 import Model
-from models.process import get_process
+from models.process import get_process, get_processes
 from models.accumulator import get_accumulator, NumpyAccumulator, ListAccumulator
 from models.metric import get_metric
 from models.dataset import get_dataloader
@@ -72,7 +72,7 @@ def main(config):
         replace=config.replace, strict=bool(config.strict))
     model.to(DEVICE)
     model.eval()
-    processes = [get_process(**p) for p in config.processes]
+    processes = get_processes(config.processes)
 
     # Prepare hooks
     accums = {aname: get_accumulator(logger=logger, **aconfig)

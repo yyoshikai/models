@@ -315,6 +315,26 @@ class PositionalEmbedding(nn.Module):
             pe = Variable(self.pe[position], requires_grad=False)
         return self.dropout(input+pe)
 
+@register_module
+class RandomPositionalEncoder(nn.Module):
+    def __init__(self, emb_size: int, max_len: int, pad_token: int, factor: float=1.0):
+        super().__init__()
+        self.emb_size = emb_size
+        self.pad_token = pad_token
+        self.factor = factor
+        pe = get_posenc(length=max_len, emb_size=self.emb_size).squeeze(1) 
+        pe *= self.factor
+        self.register_buffer('pe', pe, persistent=False)
+    def forward(self, input):
+        L, D = input.shape
+        if L > self.pe.shape[0]:
+            print("[WARNING] overflow in RandomPositionalEncoder. PE is extended.")
+            pe = get_posenc(L, self.emb_size).squeeze(1).to(self.pe.device) * self.factor
+            self.register_buffer('pe', pe, persistent=False)
+        position = torch.rand_like(input, dtype=torch.float)
+        position.masked_fill_(input == self.pad_token, torch.inf)
+        position = torch.argsort(torch.argsort(position, dim=1), dim=1) # それぞれの値が何番目か
+        return F.embedding(position, self.pe)
 # encoders
 @register_module
 class TransformerEncoder(nn.Module):

@@ -104,6 +104,33 @@ class UnimolMaskMaker(nn.Module):
 
         return coordinates, mask_mask, rand_mask, mask_mask2, rand_mask2
 
+# これはGraph MAE用
+@register_module
+class RandomMaskMaker(nn.Module):
+    def __init__(self, p, pad_token=None, min_false=0):
+        """
+        
+        
+        """
+        super().__init__()
+        self.p = p
+        self.pad_token = pad_token
+        self.min_false = min_false
+        if self.min_false:
+            assert self.pad_token is not None
+    def forward(self, input, ):
+        """
+        Parameters
+        ----------
+        input: [B, L]
+        
+        """
+        rand = torch.rand_like(input, dtype=torch.float)
+        if self.min_false > 0:
+            rand2 = torch.masked_fill(rand, input == self.pad_token, -1)
+            fill_idx = torch.argsort(rand2, dim=1)[:, -self.min_false:]
+            rand.scatter_(1, fill_idx, torch.full_like(fill_idx, fill_value=1.01, dtype=rand.dtype))
+        return rand < self.p
 
 @register_module
 class UnimolCoordHead(nn.Module):

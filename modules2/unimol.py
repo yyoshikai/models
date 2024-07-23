@@ -10,6 +10,7 @@
 240301 UnimolPELayerにedge_pe, edge_embed_dimを追加
 240518 UnimolEncoderの出力のapairs, delta_apairsのpad領域を-torch.infではなく0とするように変更
     (現状UnimolEncoderの出力はpoolerにしか使っておらず, poolerではマスクしているので影響しないと思われる)
+→ 240720 選択できるようにした。
 """
 
 import math
@@ -964,12 +965,13 @@ class UnimolEncoder2(nn.Module):
     """
     def __init__(self, 
             layer: dict,
-            n_layer, ):
+            n_layer, 
+            no_zero_fill_pad = False):
         super().__init__()
         self.layer_type = layer.pop('type', 'default')
         layer_class = unimol_layer_type2class[self.layer_type]
         self.layers = nn.ModuleList([layer_class(**layer) for _ in range(n_layer)])
-
+        self.no_zero_fill_pad = no_zero_fill_pad
 
     def forward(self, 
         atoms_emb: torch.Tensor,
@@ -1011,11 +1013,12 @@ class UnimolEncoder2(nn.Module):
             for layer in self.layers:
                 atoms_emb, apairs = layer(atoms_emb, apairs, bdist)
         apairs = apairs.view(batch_size, -1, length, length).permute(0, 2, 3, 1) # [B, L, L, H]
-        apairs.masked_fill_(torch.isinf(apairs), 0.0)
+        if not self.no_zero_fill_pad:
+            apairs.masked_fill_(torch.isinf(apairs), 0.0)
         output = atoms_emb, apairs
         if output_delta_apairs:
             delta_apairs = apairs - input_apairs.permute(0, 2, 3, 1)
-            delta_apairs.masked_fill_(torch.isinf(delta_apairs), 0.0)
+            delta_apairs.masked_fill_(~torch.isfinite(delta_apairs), 0.0) # inf - infを0埋め
             output += (delta_apairs, )
         return output
 

@@ -24,7 +24,7 @@ class Metric:
 
 class BinaryMetric(Metric):
     def __init__(self, logger, name, input, target, is_logit, is_multitask=False, 
-            input_process=None, task_names=None, **kwargs):
+            input_process=None, task_names=None, mean_multitask=False, **kwargs):
         """
         Parameters
         ----------
@@ -50,6 +50,7 @@ class BinaryMetric(Metric):
         self.is_multitask = is_multitask
         self.input_process = input_process
         self.task_names = task_names
+        self.mean_multitask = mean_multitask
     def init(self):
         self.targets = defaultdict(list)
         self.inputs = defaultdict(list)
@@ -72,10 +73,15 @@ class BinaryMetric(Metric):
             target = np.concatenate(self.targets[val_name])
             if len(self.targets) > 1:
                 if self.is_multitask:
-                    task_names = self.task_names if self.task_names is not None else range(target.shape[1]) 
-                    for i_task, task_name in enumerate(task_names):
-                        scores[f"{val_name}_{task_name}_{self.name}"] = \
-                            self.calc_score(y_true=target[:,i_task], y_score=input[:, i_task])
+                    if self.mean_multitask:
+                        scores0 = [ self.calc_score(y_true=target[:, i_task], y_score=input[:, i_task])
+                                for i_task in range(target.shape[1])]
+                        scores[f"{val_name}_{self.name}"] = np.mean(scores0)
+                    else:
+                        task_names = self.task_names if self.task_names is not None else range(target.shape[1]) 
+                        for i_task, task_name in enumerate(task_names):
+                            scores[f"{val_name}_{task_name}_{self.name}"] = \
+                                self.calc_score(y_true=target[:,i_task], y_score=input[:, i_task])
                 else:
                     scores[f"{val_name}_{self.name}"] = self.calc_score(y_true=target, y_score=input)
             total_inputs.append(input)
@@ -84,12 +90,16 @@ class BinaryMetric(Metric):
         total_inputs = np.concatenate(total_inputs, axis=0)
         total_targets = np.concatenate(total_targets, axis=0)
         if self.is_multitask:
-            for i_task, task_name in zip(range(target.shape[1]), self.task_names):
-                scores[f"{task_name}_{self.name}"] = \
-                    self.calc_score(y_true=total_targets[:,i_task], y_score=total_inputs[:, i_task])
+            if self.mean_multitask:
+                scores0 = [ self.calc_score(y_true=target[:, i_task], y_score=input[:, i_task])
+                        for i_task in range(target.shape[1])]
+                scores[self.name] = np.mean(scores0)
+            else:
+                for i_task, task_name in zip(range(target.shape[1]), self.task_names):
+                    scores[f"{task_name}_{self.name}"] = \
+                        self.calc_score(y_true=total_targets[:,i_task], y_score=total_inputs[:, i_task])
         else:
-            scores[f"{self.name}"] = \
-                self.calc_score(y_true=total_targets, y_score=total_inputs)
+            scores[self.name] = self.calc_score(y_true=total_targets, y_score=total_inputs)
         return scores
     def calc_score(self, y_true, y_score):
         raise NotImplementedError

@@ -166,9 +166,9 @@ def get_optimizer(type, **kwargs) -> torch.optim.Optimizer:
 class ModelOptimizer:
     def __init__(self, name, model: Model, dl_train, n_epoch, 
                 optimizer, scheduler=None, modules=None,
-                init_weight=None, opt_freq=1,
-                clip_grad_norm=None, clip_grad_value=None, filename=None, 
-                condition: dict=None):
+                loss_names = ['loss'], init_weight=None,
+                opt_freq=1, normalize=False, normalize_item=None,
+                clip_grad_norm=None, clip_grad_value=None, filename=None):
         self.name = name
         if modules is not None: 
             self.params = []
@@ -182,7 +182,10 @@ class ModelOptimizer:
         else:
             self.scheduler = get_scheduler(optimizer=self.optimizer,dl_train=dl_train,
             n_epoch=n_epoch, opt_freq=opt_freq, **scheduler)
+        self.loss_names = loss_names
         self.opt_freq = opt_freq
+        self.normalize = normalize
+        self.normalize_item = normalize_item
         self.clip_grad_norm = clip_grad_norm
         self.clip_grad_value = clip_grad_value
         if init_weight is not None:
@@ -193,37 +196,24 @@ class ModelOptimizer:
             filename = f"optimizer/{self.name}"
         self.filename = filename
 
-        # 特定の条件下でのみstepする(GAN用)
-        if condition is not None:
-            condition.setdefault('min', -float('inf'))
-            condition.setdefault('max', float('inf'))
-            if condition['min'] == -float('inf') and \
-                    condition['max'] == float('inf'):
-                condition = None
-            
-            self.condition = dict(**condition)
-        else:
-            self.condition = None
-
     def step(self, batch):
         
+        loss = sum(batch[lname] for lname in self.loss_names)
+        if self.normalize:
+            loss = loss / loss.detach()
+        if self.normalize_item:
+            loss = loss / batch[self.normalize_item]
+        batch[self.name] = loss
+        loss.backward()
+
         if (batch['step']+1) % self.opt_freq == 0: # これで合っている?
-            optim_step = True
-            if self.condition is not None:
-                if self.condition['min'] <= batch[self.condition['target']] \
-                        <= self.condition['max']:
-                    optim_step = True
-                else:
-                    optim_step = False
-            print(optim_step)
-            if optim_step: 
-                if self.clip_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(self.params, 
-                        max_norm=self.clip_grad_norm, error_if_nonfinite=True)
-                if self.clip_grad_value is not None:
-                    torch.nn.utils.clip_grad_value_(self.params,
-                        clip_value=self.clip_grad_value)
-                self.optimizer.step()
+            if self.clip_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(self.params, 
+                    max_norm=self.clip_grad_norm, error_if_nonfinite=True)
+            if self.clip_grad_value is not None:
+                torch.nn.utils.clip_grad_value_(self.params,
+                    clip_value=self.clip_grad_value)
+            self.optimizer.step()
             if self.scheduler is not None:
                 self.scheduler.step()
             self.optimizer.zero_grad()
