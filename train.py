@@ -210,12 +210,11 @@ def main(config, args=None):
             self.logger.info(f"Validating step{step:7} ...")
             if not self.eval_train:
                 model.eval()
-            ## evaluation
-            for x in metrics+accumulators+[idx_accumulator]: x.init()
             with torch.no_grad():
                 for key, dl in dls_val.items():
-                    for metric in metrics:
-                        metric.set_val_name(key)
+                    dlname = "" if key == "base" else f"_{key}"
+                    ## evaluation
+                    for x in metrics+accumulators+[idx_accumulator]: x.init()
                     for batch0 in dl:
                         batch0 = model(batch0, processes=val_processes)
                         for x in metrics+accumulators+[idx_accumulator]:
@@ -223,20 +222,20 @@ def main(config, args=None):
                         del batch0
                         torch.cuda.empty_cache()
                     
-            ## calculate & save score
-            scores = {}
-            for metric in metrics: scores = metric.calc(scores)
-            batch.update(scores)
-            for score_lb, score in scores.items():
-                self.logger.info(f"  {score_lb:20}: {score:.3f}")
-                scores_df.loc[step, score_lb] = score
-            scores_df.to_csv(result_dir+"/val_score.csv", index_label="Step")
+                    ## calculate & save score
+                    scores = {}
+                    for metric in metrics: scores = metric.calc(scores)
+                    batch.update({key+dlname: value for key, value in scores.items()})
+                    for score_lb, score in scores.items():
+                        self.logger.info(f"  {score_lb:20}: {score:.3f}")
+                        scores_df.loc[step, score_lb] = score
+                    scores_df.to_csv(f"{result_dir}/val_score{dlname}.csv", index_label="Step")
 
-            ## save accumulated
-            idx = idx_accumulator.accumulate()
-            idx = np.argsort(idx)
-            for accumulator in accumulators:
-                accumulator.save(f"{result_dir}/accumulates/{accumulator.input}/{step}", indices=idx)
+                    ## save accumulated
+                    idx = idx_accumulator.accumulate()
+                    idx = np.argsort(idx)
+                    for accumulator in accumulators:
+                        accumulator.save(f"{result_dir}/accumulates/{accumulator.input}{dlname}/{step}", indices=idx)
             
             ## save steps
             self.eval_steps.append(step)

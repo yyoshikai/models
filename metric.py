@@ -1,3 +1,7 @@
+"""
+240723 val_nameを削除
+"""
+
 from collections import defaultdict
 import itertools
 import numpy as np
@@ -9,21 +13,18 @@ from sklearn.metrics import roc_auc_score, average_precision_score, \
 class Metric:
     def __init__(self, logger, name, **kwargs):
         check_leftargs(self, logger, kwargs)
-        self.val_name = ''
         self.name = name
-    def set_val_name(self, val_name):
-        self.val_name = val_name
     def init(self):
         raise NotImplementedError
     def add(self, batch):
         raise NotImplementedError
-    def calc(self):
+    def calc(self, scores: dict):
         raise NotImplementedError
     def __call__(self, batch):
         self.add(batch)
 
 class BinaryMetric(Metric):
-    def __init__(self, logger, name, input, target, is_logit, is_multitask=False, 
+    def __init__(self, logger, name, input, target, is_logit=None, is_multitask=False, 
             input_process=None, task_names=None, mean_multitask=False, **kwargs):
         """
         Parameters
@@ -43,20 +44,32 @@ class BinaryMetric(Metric):
         super().__init__(logger, name, **kwargs)
         self.input = input
         self.target = target
-        self.is_logit = bool(is_logit)
+        self.is_logit = is_logit
         assert input_process is None or input_process in {'softmax', 'sigmoid'}
-        if input_process == 'softmax': assert not is_logit
-        elif input_process == 'sigmoid': assert is_logit
+        if self.is_logit is not None:
+            self._check_input_process()
         self.is_multitask = is_multitask
         self.input_process = input_process
         self.task_names = task_names
         self.mean_multitask = mean_multitask
+    def _check_input_process(self):
+            if self.input_process == 'softmax': assert not self.is_logit
+            elif self.input_process == 'sigmoid': assert self.is_logit
+
     def init(self):
-        self.targets = defaultdict(list)
-        self.inputs = defaultdict(list)
+        self.targets = []
+        self.inputs = []
     def add(self, batch):
-        self.targets[self.val_name].append(batch[self.target].cpu().numpy())
+        self.targets.append(batch[self.target].cpu().numpy())
         input = batch[self.input]
+        if self.is_logit is None:
+            if self.is_multitask:
+                self.is_logit = input.dim() == 2
+            else:
+                self.is_logit = input.dim() == 1
+            self._check_input_process()
+            if not self.is_logit:
+                assert input.size()[-1] == 2
         if self.input_process == 'softmax':
             input = torch.softmax(input, dim=-1)
         elif self.input_process == 'sigmoid':
@@ -64,31 +77,12 @@ class BinaryMetric(Metric):
         input = input.cpu().numpy()
         if not self.is_logit:
             input = input[..., 1]
-        self.inputs[self.val_name].append(input)
+        self.inputs.append(input)
     def calc(self, scores):
-        total_inputs = []
-        total_targets = []
-        for val_name in self.targets.keys():
-            input = np.concatenate(self.inputs[val_name])
-            target = np.concatenate(self.targets[val_name])
-            if len(self.targets) > 1:
-                if self.is_multitask:
-                    if self.mean_multitask:
-                        scores0 = [ self.calc_score(y_true=target[:, i_task], y_score=input[:, i_task])
-                                for i_task in range(target.shape[1])]
-                        scores[f"{val_name}_{self.name}"] = np.mean(scores0)
-                    else:
-                        task_names = self.task_names if self.task_names is not None else range(target.shape[1]) 
-                        for i_task, task_name in enumerate(task_names):
-                            scores[f"{val_name}_{task_name}_{self.name}"] = \
-                                self.calc_score(y_true=target[:,i_task], y_score=input[:, i_task])
-                else:
-                    scores[f"{val_name}_{self.name}"] = self.calc_score(y_true=target, y_score=input)
-            total_inputs.append(input)
-            total_targets.append(target)
-        if len(total_inputs) == 0: return scores
-        total_inputs = np.concatenate(total_inputs, axis=0)
-        total_targets = np.concatenate(total_targets, axis=0)
+
+        input = np.concatenate(self.inputs)
+        target = np.concatenate(self.targets)
+        if len(input) == 0: return scores
         if self.is_multitask:
             if self.mean_multitask:
                 scores0 = [ self.calc_score(y_true=target[:, i_task], y_score=input[:, i_task])
@@ -97,9 +91,9 @@ class BinaryMetric(Metric):
             else:
                 for i_task, task_name in zip(range(target.shape[1]), self.task_names):
                     scores[f"{task_name}_{self.name}"] = \
-                        self.calc_score(y_true=total_targets[:,i_task], y_score=total_inputs[:, i_task])
+                        self.calc_score(y_true=target[:,i_task], y_score=input[:, i_task])
         else:
-            scores[self.name] = self.calc_score(y_true=total_targets, y_score=total_inputs)
+            scores[self.name] = self.calc_score(y_true=target, y_score=input)
         return scores
     def calc_score(self, y_true, y_score):
         raise NotImplementedError
@@ -151,23 +145,18 @@ class GANAUROCMetric(Metric):
 
 class MeanMetric(Metric):
     def init(self):
-        self.scores = defaultdict(list)
+        self.values = []
     def calc(self, scores):
-        total_values = []
-        for val_name, values in self.scores.items():
-            if values[0].ndim == 0:
-                values = np.array(values)
-            else:
-                values = np.concatenate(values)
-            if len(self.scores) > 1:
-                scores[f"{val_name}_{self.name}"] = np.mean(values)
-            total_values.append(values)
-        if len(self.scores) > 0:
-            scores[self.name] = np.mean(np.concatenate(total_values))
+        if self.values[0].ndim == 0:
+            values = np.array(self.values)
+        else:
+            values = np.concatenate(self.values)
+        if len(values) > 0:
+            scores[self.name] = np.mean(np.concatenate(values))
         return scores
 class ValueMetric(MeanMetric):
     def add(self, batch):
-        self.scores[self.val_name].append(batch[self.name].cpu().numpy())
+        self.values.append(batch[self.name].cpu().numpy())
 class PerfectAccuracyMetric(MeanMetric):
     def __init__(self, logger, name, input, target, pad_token, **kwargs):
         super().__init__(logger, name, **kwargs)
@@ -176,7 +165,7 @@ class PerfectAccuracyMetric(MeanMetric):
         self.target = target
         self.pad_token = pad_token
     def add(self, batch):
-        self.scores[self.val_name].append(torch.all((batch[self.input] == batch[self.target])
+        self.values.append(torch.all((batch[self.input] == batch[self.target])
             ^(batch[self.target] == self.pad_token), axis=1).cpu().numpy())
 class PartialAccuracyMetric(MeanMetric):
     def __init__(self, logger, name, input, target, pad_token, **kwargs):
@@ -189,7 +178,7 @@ class PartialAccuracyMetric(MeanMetric):
         target_seq = batch[self.target]
         pred_seq = batch[self.input]
         pad_mask = (target_seq != self.pad_token).to(torch.int)
-        self.scores[self.val_name].append((torch.sum((target_seq == pred_seq)*pad_mask, dim=1)
+        self.values.append((torch.sum((target_seq == pred_seq)*pad_mask, dim=1)
             /torch.sum(pad_mask, dim=1)).cpu().numpy())
 metric_type2class = {
     'value': ValueMetric,
@@ -202,5 +191,5 @@ metric_type2class = {
     'perfect': PerfectAccuracyMetric,
     'partial': PartialAccuracyMetric,
 }
-def get_metric(type, **kwargs) -> Metric:
-    return metric_type2class[type](**kwargs)
+def get_metric(logger, name, type, **kwargs) -> Metric:
+    return metric_type2class[type](logger=logger, name=name, **kwargs)

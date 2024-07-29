@@ -142,18 +142,50 @@ def get_process(type=None, **kwargs):
 def get_process_from_config(config):
     return get_process(**config)
 
-def get_processes(config):
+def get_processes(config, tconfig=None):
     if isinstance(config, list):
-        processes = [get_process(**process) for process in config]
+        processes0 = [get_process(**p) for p in config]
+        if tconfig is None:
+            processes = processes0
+        elif isinstance(tconfig, dict) and 'path' in tconfig:
+            tmodule = load_module(config['path'])
+            tprocesses = tmodule.__getattribute__(config['function'])
+            def processes(model, batch):
+                tprocesses(model, batch)
+                for process in processes0:
+                    process(model, batch)
+                return batch
+        elif isinstance(tconfig, dict):
+            raise ValueError("train_loop=dict and val_loop=list is not supported.")
+        else:
+            raise ValueError
+    elif isinstance(config, dict) and 'path' in config:
+        module = load_module(config['path'])
+        processes0 = module.__getattribute__(config['function'])
+        if tconfig is None:
+            processes = processes0
+        elif isinstance(tconfig, dict) and 'path' in tconfig:
+            tmodule = load_module(config['Dict'])
+            tprocesses = tmodule.__getattribute__(config['function'])
+            def processes(model, batch):
+                tprocesses(model, batch)
+                processes0(model, batch)
+                return batch
+        elif isinstance(tconfig, dict):
+            raise ValueError("train_loop=dict and val_loop=module is not supported.")
+        else:
+            raise ValueError
     elif isinstance(config, dict):
-        if 'path' in config: # 関数を指定する場合
-            module = load_module(config['path'])
-            processes = module.__getattribute__(config['function'])
-        else: # dictでprocessを指定する場合
-            config = list(config.values())
-            train_times = [process.pop('order') for process in config]
-            config = [config[i] for i in np.argsort(train_times)]
-            processes = [get_process(**process) for process in config]
+            if tconfig is None or \
+                    (isinstance(tconfig, dict) and 'path' not in tconfig):
+                config = list(config.values())
+                if tconfig is not None:
+                    config = list(tconfig.values())+config
+                times = [process.pop('order') for process in config]
+                config = [config[i] for i in np.argsort(times)]
+                processes = [get_process(**process) for process in config]
+            else:
+                raise ValueError
     else:
         raise ValueError
     return processes

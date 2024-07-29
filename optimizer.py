@@ -154,6 +154,7 @@ class LookaheadOptimizer(optim.Optimizer):
                     group.setdefault(name, default)
 
 optimizer_type2class = {
+    'sgd': torch.optim.SGD,
     'adam': torch.optim.Adam,
     'adamw': torch.optim.AdamW,
     'radam': RAdam,

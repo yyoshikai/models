@@ -1,27 +1,22 @@
 import sys, os
 import pickle
 import numpy as np
+import torch
 
 from .utils import check_leftargs, EMPTY
 
 class NumpyAccumulator:
-    def __init__(self, logger, input, batch_dim=0, org_type='torch.tensor', **kwargs):
+    def __init__(self, logger, input, batch_dim=0, org_type=None, **kwargs):
         """
         Parameters
         ----------
         input: [str] Key of value in batch to accumulate
-        org_type: [str, 'list', 'torch.tensor', 'np.array'; default='torch.tensor']
-            Type of value to accumulate
+        org_type: 自動で決定することになったので使わない. deprecated.
         batch_dim: [int; default=0] Dimension of batch
         """
         check_leftargs(self, logger, kwargs)
         self.input = input
-        if org_type in {'tensor', 'torch', 'torch.tensor'}:
-            self.converter = lambda x: x.cpu().numpy()
-        elif org_type in {'np', 'np.array', 'np.ndarray', 'numpy', 'numpy.array', 'numpy.ndarray'}:
-            self.converter = EMPTY
-        else:
-            raise ValueError(f"Unsupported type of config.org_type: {org_type} in NumpyAccumulator")
+        self.converter = None
         self.batch_dim = batch_dim
     def init(self):
         self.accums = []
@@ -35,33 +30,27 @@ class NumpyAccumulator:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         np.save(path, self.accumulate(indices=indices))
     def __call__(self, batch):
+        input = batch[self.input]
+        if self.converter is None:
+            if isinstance(input, np.ndarray):
+                self.converter = EMPTY
+            elif isinstance(input, torch.Tensor):
+                self.converter = lambda x: x.cpu().numpy()
+            else:
+                raise ValueError(f"{self.__class__}: Unsupported input: {type(input)}")
         self.accums.append(self.converter(batch[self.input]))
 class ListAccumulator:
-    def __init__(self, logger, input, org_type='torch.tensor', batch_dim=None, **kwargs):
+    def __init__(self, logger, input, batch_dim=None, org_type='torch.tensor', **kwargs):
         """
         Parameters
         ----------
         input: [str] Key of value in batch to accumulate
-        org_type: [str, 'list', 'torch.tensor', 'np.array'] Type of value
-                    to accumulate
+        org_type: deprecated.
         """
         check_leftargs(self, logger, kwargs)
         self.input = input
-        if org_type == 'list':
-            assert batch_dim is None, f"batch_dim cannot be defined when org_type is list"
-            self.converter = EMPTY
-        else:
-            if batch_dim is None: batch_dim = 0
-            if org_type in {'tensor', 'torch.tensor'}:
-                if batch_dim == 0:
-                    self.converter = lambda x: list(x.cpu().numpy())
-                else:
-                    self.converter = lambda x: list(x.transpose(batch_dim, 0).cpu().numpy())
-            elif org_type in {'np.array', 'np.ndarray', 'numpy', 'numpy.array', 'numpy.ndarray'}:
-                if batch_dim == 0:
-                    self.converter = lambda x: list(x)
-                else:
-                    self.converter = lambda x: list(x.swapaxes(0, batch_dim))
+        self.batch_dim = batch_dim
+        self.converter = None
     def init(self):
         self.accums = []
     def accumulate(self, indices=None):
@@ -76,6 +65,26 @@ class ListAccumulator:
         with open(f"{path_without_ext}.pkl", 'wb') as f:
             pickle.dump(self.accumulate(indices=indices), f)
     def __call__(self, batch):
+
+        input = batch[self.input]
+        if self.converter is None:
+            if isinstance(input, list):
+                assert self.batch_dim is None, f"batch_dim cannot be defined when org_type is list"
+                self.converter = EMPTY
+            else:
+                if self.batch_dim is None: self.batch_dim = 0
+                if isinstance(input, torch.Tensor):
+                    if self.batch_dim == 0:
+                        self.converter = lambda x: list(x.cpu().numpy())
+                    else:
+                        self.converter = lambda x: list(x.transpose(self.batch_dim, 0).cpu().numpy())
+                elif isinstance(input, np.ndarray): 
+                    if self.batch_dim == 0:
+                        self.converter = lambda x: list(x)
+                    else:
+                        self.converter = lambda x: list(x.swapaxes(0, self.batch_dim))
+                else:
+                    raise ValueError(f"{self.__class__}: Unsupported input: {type(input)}")
         self.accums += self.converter(batch[self.input])
 
 accumulator_type2class = {
