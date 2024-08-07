@@ -152,9 +152,9 @@ class DataLoader:
 
 class NormalDataLoader(DataLoader):
     def __init__(self, logger, device, 
-            datasets, seed, batch_size, checkpoint=None, drop_last=False, **kwargs):
+            datasets, seed, batch_size, checkpoint=None, drop_last=False):
         super().__init__(logger=logger, datasets=datasets, seed=seed,
-            device=device, checkpoint=checkpoint, **kwargs)
+            device=device, checkpoint=checkpoint)
         self.batch_size = batch_size
         if not isinstance(datasets, list): datasets = [datasets]
         self.dset_name0 = list(datasets[0].datasets.keys())[0]
@@ -167,92 +167,11 @@ class NormalDataLoader(DataLoader):
         if self.drop_last and len(idxs[-1]) < self.batch_size:
             idxs = idxs[:-1]
         return idxs
-
-class BucketDataLoader(DataLoader):
-    def __init__(self, logger, device, datasets, seed, bucket_dset, checkpoint=None, 
-        bin_linspace=None, bins=None, add_lower_margin=True, add_upper_margin=True,
-        batch_size=None, num_tokens=None, num_tokens_dim=None, max_batch_size=None, **kwargs):
-        """
-        num_tokensを指定すると, max_lenに応じてbatch_sizeを変えるようにする。
-        
-        Parameters
-        ----------
-        bucket_dset: str
-            name of dataset which bucketing is based on.
-        bucket_linspace: Optional[tuple(int, int, int)]
-            np.linspace(*bin_linspace) is used as bins
-        bins: List[int]
-            bins of bucket.
-            bucket[i]: bins[i] <= length < bins[i+1]
-        add_lower_margin: bool
-        add_upper_margin: bool
-        batch_size: Optional[int or List[int]]
-        num_tokens: Optional, int
-        num_tokens_dim: Optional, int
-            batch_size*(length**num_tokens_dim) is restricted to num_tokens
-        """
-        super().__init__(logger=logger, datasets=datasets, seed=seed,
-            device=device, checkpoint=checkpoint, **kwargs)
-        # check args
-        if (bin_linspace is None) == (bins is None):
-            raise ValueError(f"Either bin_linspace({bin_linspace}) XOR bins({bins}) must be specified")
-        if (batch_size is None) == (num_tokens is None):
-            raise ValueError(f"Either batch_size({batch_size}) XOR num_tokens({num_tokens}) must be specified.")
-        if batch_size is not None:
-            assert num_tokens_dim is None, "When batch size is specified, num_tokens_dim must not be specified."
-            assert max_batch_size is None, "When batch size is specified, max_batch_size must not be specified."
-        else:
-            if num_tokens_dim is None: num_tokens_dim = 1
-            if max_batch_size is None: max_batch_size = float('inf')
-        
-        self.buckets = [None]*len(self.dset_configss)
-        self.bucket_dset = bucket_dset
-
-        # calc bucket bins
-        if bin_linspace is not None:
-            bins = list(np.linspace(*bin_linspace))
-        if add_lower_margin and (len(bins) == 0 or bins[0] > 0):
-            bins.insert(0, 0)
-        if add_upper_margin and (len(bins) == 0 or bins[-1] < float('inf')):
-            bins.append(float('inf'))
-        self.bins = bins
-        self.n_bucket = len(self.bins) - 1
-
-        # calc batch sizes
-        self.num_tokens = num_tokens
-        self.num_tokens_dim = num_tokens_dim
-        if batch_size is not None:
-            if isinstance(batch_size, list):
-                assert len(batch_size) == self.n_bucket
-                self.batch_sizes = batch_size
-            else:
-                self.batch_sizes = [batch_size]*(len(self.bins)-1)
-        else:
-            self.batch_sizes = [min(int(num_tokens//(np.ceil(sup_len)-1)**num_tokens_dim), max_batch_size)
-                 for sup_len in self.bins[1:]]
-    def get_idxs(self, dsets):
-        lengths = dsets[self.bucket_dset].lengths
-        max_len = torch.max(lengths)
-        amax = torch.argmax(lengths)
-        ibs = np.digitize(lengths, self.bins) - 1
-        batch_sizes = self.batch_sizes
-        if self.num_tokens is not None and self.bins[-1] == float('inf'):
-            batch_sizes[-1] = int(self.num_tokens//torch.max(lengths).item()**self.num_tokens_dim)
-        idxs = []
-        for ib, batch_size in enumerate(self.batch_sizes):
-            bucket_idxs = np.where(ibs == ib)[0]
-            if len(bucket_idxs) == 0: continue
-            self.rstate.shuffle(bucket_idxs)
-            idxs += [bucket_idxs[i:i+batch_size] for i in range(0, len(bucket_idxs), batch_size)]
-        idxs = np.array(idxs, dtype=object)
-        self.rstate.shuffle(idxs)
-        return idxs
     
-class MultiBucketDataLoader(DataLoader):
-    def __init__(self, logger, device, datasets, seed, buckets, batch_sizes, checkpoint=None, 
-        **kwargs):
+class BucketDataLoader(DataLoader):
+    def __init__(self, logger, device, datasets, seed, buckets, batch_sizes, checkpoint=None):
         """
-        2つ以上のデータに対するbucketing
+        2つ以上のデータも可能
         add_upper_margin, add_lower_marginはないので, 0, infをbucketsのbinsに加えて下さい
 
         Parameters
@@ -263,7 +182,7 @@ class MultiBucketDataLoader(DataLoader):
         
         """
         super().__init__(logger=logger, datasets=datasets, seed=seed,
-            device=device, checkpoint=checkpoint, **kwargs)
+            device=device, checkpoint=checkpoint)
         
         self.buckets = buckets
         self.batch_sizes = batch_sizes
@@ -291,7 +210,6 @@ class MultiBucketDataLoader(DataLoader):
 dataloader_type2class = {
     'normal': NormalDataLoader,
     'bucket': BucketDataLoader,
-    'multibucket': MultiBucketDataLoader
 }
 
 def get_dataloader(logger, device, type, **kwargs) -> DataLoader:

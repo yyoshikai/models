@@ -13,6 +13,8 @@ import pickle
 import time
 import random
 import shutil
+from logging import getLogger
+from logging.config import dictConfig
 from copy import deepcopy
 from contextlib import nullcontext
 
@@ -25,18 +27,18 @@ from tqdm import tqdm
 
 from tools.notice import notice, noticeerror
 from tools.path import make_result_dir, timestamp
-from tools.logger import default_logger
+import tools.logger
 from tools.args import load_config2, subs_vars
 from tools.torch import get_params
 from models.dataset import get_dataloader
 from models.accumulator import get_accumulator, NumpyAccumulator
 from models.metric import get_metric
-from models.optimizer import get_scheduler
 from models.process import get_processes
-from models.hooks import AlarmHook, hook_type2class, get_hook
+# from models.hooks import AlarmHook, hook_type2class, get_hook
 from models import Model
 from models.optimizer import ModelOptimizer
-from models.utils import get_set
+from models.utils import set_env
+from models.alarm import Alarm
 
 def save_rstate(dirname):
     os.makedirs(dirname, exist_ok=True)
@@ -59,34 +61,36 @@ def set_rstate(config):
     if 'cuda' in config:
         torch.cuda.set_rng_state_all(torch.load(config.cuda))
 
+
+
 @noticeerror(from_=f"train.py in {os.getcwd()}", notice_end=False)
-def main(config, args=None):
+def main(args, 
+        result_dir, 
+        model,
+        logging,
+        init_weight={},
+        env={},
+        abortion: dict={},
+        minus_abortion={},
+        notice_alarm: dict={}, 
+        notice_studyname="",):
 
     # make training
-    trconfig = config.training
-    result_dir = make_result_dir(**trconfig.result_dir)
-    logger = default_logger(result_dir+"/log.txt", trconfig.verbose.loglevel.stream or 'info', trconfig.verbose.loglevel.file or 'debug')
+    # trconfig = config.training
+    result_dir = make_result_dir(**result_dir)
+    logger = getLogger(__name__)
     with open(result_dir+"/config.yaml", mode='w') as f:
         yaml.dump(config.to_dict(), f, sort_keys=False)
     logger.warning(f"options: {' '.join(args)}")
 
     # environment
-    ## device
-    DEVICE = torch.device('cuda', index=trconfig.gpuid or 0) \
-        if torch.cuda.is_available() else torch.device('cpu')
-    logger.warning(f"DEVICE: {DEVICE}")
-    ## detect anomaly
-    if trconfig.detect_anomaly:
-        torch.autograd.set_detect_anomaly(True)
-    ## deterministic
-    if trconfig.deterministic:
-        torch.backends.cudnn.deterministic = True
-        torch.use_deterministic_algorithms = True
-        torch.backends.cudnn.benchmark = False
+    dictConfig(logging)
+    device = set_env(**env)
+    logger.warning(f"device: {device}")
     
     # prepare data
-    dl_train = get_dataloader(logger=logger, device=DEVICE, **trconfig.data.train)
-    dls_val = {name: get_dataloader(logger=logger, device=DEVICE, **dl_val_config)
+    dl_train = get_dataloader(logger=logger, device=device, **trconfig.data.train)
+    dls_val = {name: get_dataloader(logger=logger, device=device, **dl_val_config)
         for name, dl_val_config in trconfig.data.vals.items()}
     n_epoch = trconfig.n_epoch or 1
     
@@ -96,46 +100,32 @@ def main(config, args=None):
         np.random.seed(trconfig.model_seed)
         torch.manual_seed(trconfig.model_seed)
         torch.cuda.manual_seed(trconfig.model_seed)
-    model = Model(logger=logger, **config.model)
-    if trconfig.init_weight:
-        model.load(**trconfig.init_weight)
+    model = Model(logger=logger, **model)
+    model.load(**init_weight)
+    model.to(device)
+
+    # show param
     df_param, n_param, bit_size = get_params(model)
     df_param.to_csv(f"{result_dir}/parameters.tsv", sep='\t', index=False)
     logger.info(f"# of params: {n_param}")
     logger.info(f"Model size(bit): {bit_size}")
-    model.to(DEVICE)
-
+    
     # prepare optimizer
     optimizers = {
         oname: ModelOptimizer(name=oname, model=model, dl_train=dl_train, n_epoch=n_epoch, **oconfig)
         for oname, oconfig in optimizers.items()
     }
     
-    # process
+    # Prepare process
     train_processes = get_processes(trconfig.train_loop)
     val_processes = get_processes(trconfig.val_loop, 
             trconfig.train_loop if trconfig.val_loop_add_train else None)
 
-    class SchedulerAlarmHook(AlarmHook):
-        def __init__(self, scheduler, optimizer='loss', **kwargs):
-            super().__init__(**kwargs)
-            scheduler.setdefault('last_epoch', dl_train.step - 1)
-            self.scheduler = get_scheduler(optimizers[optimizer].optimizer, 
-                dl_train=dl_train, n_epoch=n_epoch, opt_freq=trconfig.schedule.opt_freq,
-                **scheduler)
-        def ring(self, batch, model):
-            self.scheduler.step()
-    hook_type2class['scheduler_alarm'] = SchedulerAlarmHook
-
     # Prepare abortion
-    abortion: dict = trconfig.abortion
-    abort_time = abortion.pop('time', None)
-    minus_abortion: dict = trconfig.mabortion
+    abort_time = abortion.pop('time', float('inf'))
 
     # Prepare notice
-    notice_studyname = trconfig.notice.pop('studyname', "")
-    notice_end = bool(trconfig.notice.end)
-    notice_points = {key: get_set(value) for key, value in trconfig.notice.points}
+    notice_alarm: Alarm = Alarm(**notice_alarm)
 
     # Prepare metrics
     accumulators = [ get_accumulator(**acc_config) for acc_config in trconfig.accumulators ]
@@ -233,28 +223,28 @@ def main(config, args=None):
         
         while True:
             now = time.time()
-            # pre hooks
+            ## pre hooks
             batch = {'step': dl_train.step, 'epoch': dl_train.epoch}
             for hook in pre_hooks:
                 hook(batch, model)
             
-            # abortion
+            ## abortion
             for key, value in abortion.items():
                 if key in batch and batch[key] >= value:
                     batch['end'] = True
             for key, value in minus_abortion.items():
                 if key in batch and batch[key] <= value:
                     batch['end'] = True
-            if abort_time is not None and now - training_start >= abort_time:
+            if now - training_start >= abort_time:
                 batch['end'] = True
             if 'end' in batch: break
 
-            # training
+            ## training
             batch = dl_train.get_batch(batch)
+
+            ## Log shapes
             if len(lconfigs) > 0:
                 logger.log(level=max_loop_log_level, msg=f"Step {dl_train.step}: ")
-
-            # Log shapes
             for lconfig in lconfigs:
                 item = batch[lconfig.name]
                 msg = f"  {lconfig.name}: "
@@ -278,17 +268,19 @@ def main(config, args=None):
             torch.cuda.empty_cache()
             if pbar is not None: pbar.update(1)
 
-            # notice
-            for key, values in notice_points.items():
-                if batch[key] in values:
-                    notice(f"models/train.py {notice_studyname} {key} {batch[key]} finished!")
-    if notice_end:
+            ## notice
+            if notice_alarm(batch):
+                key = notice_alarm.reason
+                notice(f"models/train.py {notice_studyname} {key} {batch[key]} finished!")
+    # end process
+    ## notice
+    if notice_alarm(batch):
         notice(f"models/train.py: {notice_studyname} finished!")
     for hook in pre_hooks+post_hooks:
         hook(batch, model)
 
 if __name__ == '__main__':
-    config = load_config2("", default_configs=['base.yaml'])
+    config_ = load_config2("", default_configs=['base.yaml'])
     ## replacement of config: add more when needed
-    config = subs_vars(config, {"$TIMESTAMP": timestamp()})
-    main(config, sys.argv)
+    config_ = subs_vars(config_, {"$TIMESTAMP": timestamp()})
+    main(sys.argv, **config_)

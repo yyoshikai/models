@@ -202,7 +202,8 @@ class Model(nn.ModuleDict):
         else: # callable
             processes(self, batch)
             return batch
-    def load(self, path, replace={}, strict=True):
+    def load(self, path=None, replace={}, strict=True):
+        if path is None: return
         if os.path.isfile(path):
             device = list(self.parameters())[0].device
             state_dict = torch.load(path, map_location=device)
