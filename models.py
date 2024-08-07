@@ -43,8 +43,7 @@ def init_config2func(type='none', factor=None, **kwargs):
     """
     Parameters
     ----------
-    type: int, float, str or dict
-        **で展開する前の引数を第一引数(=type)に与えてもよい。    
+    type: int, float or str    
     """
     
     if factor is not None:
@@ -52,9 +51,6 @@ def init_config2func(type='none', factor=None, **kwargs):
             init_config2func(type, **kwargs)(input)
             input.data = input.data * factor
         return init
-
-    if isinstance(type, dict):
-        return init_config2func(**type)
     
     if isinstance(type, (int, float)):
         return lambda input: nn.init.constant_(input, float(type))
@@ -63,27 +59,6 @@ def init_config2func(type='none', factor=None, **kwargs):
     else:
         raise ValueError(f"Unsupported type of init function: {type}")
 
-def init_config2func_old(layer_config): # 多くのinit_config2funcはこちらに対応していると思われる(現状↑のでも対応できるが)。
-    if isinstance(layer_config, (str, int, float)):
-        type_ = layer_config
-    elif isinstance(layer_config, dict):
-        if layer_config == {}:
-            type_ = 'none'
-        else:
-            type_ = layer_config.type
-
-    
-    if isinstance(type_, (int, float)):
-        return lambda input: nn.init.constant_(input, float(type_))
-    
-    if type_ in init_type2func:
-        return init_type2func[type_]
-    elif type_ == 'uniform':
-        return lambda input: nn.init.uniform_(input, layer_config['a'], layer_config['b'])
-    elif type_ == 'normal':
-        return lambda input: nn.init.normal_(input, layer_config['mean'], layer_config['std'])
-    else:
-        raise ValueError(f"Unsupported types of init function: {layer_config}")
 def get_tensor_size(x: torch.Tensor, dim=None):
     size = x.shape
     if dim is not None:
@@ -140,7 +115,7 @@ function_name2func = {
     'squeeze': torch.squeeze,
     'repeat_interleave': torch.repeat_interleave
 }
-torch.multiply
+
 def function_config2func(config):
     if isinstance(config, str):
         return function_name2func[config]

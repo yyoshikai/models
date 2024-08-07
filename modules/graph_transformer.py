@@ -129,7 +129,7 @@ class GraphAttentionLayer(nn.Module):
         return self.dropout2(x)
 
 class GraphEncoder(nn.Module):
-    def __init__(self, layer, n_layer, norm=None, init=dict()):
+    def __init__(self, layer, n_layer, norm=None):
         """
         パラメータはTransformerEncoderとほぼ同じ。
         
@@ -151,12 +151,6 @@ class GraphEncoder(nn.Module):
             self.norm = nn.LayerNorm(normalized_shape=d_model, **norm)
         else:
             self.norm = None
-
-        # weight init
-        for name, param in self.state_dict().items():
-            for pattern, config in init.items():
-                if pattern in name:
-                    init_config2func(config)(param)
 
     def forward(self, nodes: torch.Tensor, node_padding_mask: torch.Tensor, bonds=torch.Tensor):
         """

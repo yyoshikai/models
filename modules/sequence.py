@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from ..models import function_name2func, function_config2func, init_config2func, register_module
+from ..models import function_name2func, function_config2func, register_module
 
 
 
@@ -338,7 +338,7 @@ class RandomPositionalEncoder(nn.Module):
 # encoders
 @register_module
 class TransformerEncoder(nn.Module):
-    def __init__(self, layer, n_layer, norm=None, init=dict()):
+    def __init__(self, layer, n_layer, norm=None):
         """
         AttentionEncoderと同じ。
 
@@ -358,17 +358,6 @@ class TransformerEncoder(nn.Module):
         if norm is not None:
             norm = nn.LayerNorm(normalized_shape=d_model, **norm)
         self.encoder = TransformerEncoderOrg(layer, num_layers=n_layer, norm=norm)
-
-        # weight init (deprecated)
-        init_warned = False
-        for name, param in self.state_dict().items():
-            for pattern, config in init.items():
-                if pattern in name:
-                    if not init_warned:
-                        print("[WARNING] Initialization in modules is deprecated. "
-                            "Use initialization in model instead.")
-                        init_warned = True
-                    init_config2func(config)(param)
     
     def forward(self, src, key_padding_mask, need_weights=False):
         """
@@ -387,7 +376,7 @@ class TransformerEncoder(nn.Module):
 # decoders
 @register_module
 class TransformerDecoder(nn.Module):
-    def __init__(self, layer, n_layer, max_len, norm=None, init=dict()):
+    def __init__(self, layer, n_layer, max_len, norm=None):
         """
         古いモデル。
         (240208では3dvaeにて普通に使っている。)
@@ -415,17 +404,6 @@ class TransformerDecoder(nn.Module):
         if norm is not None:
             norm = nn.LayerNorm(normalized_shape=d_model, **norm)
         self.decoder = nn.TransformerDecoder(layer, num_layers=n_layer, norm=norm)
-
-        # weight init (deprecated)
-        init_warned = False
-        for name, param in self.state_dict().items():
-            for pattern, config in init.items():
-                if pattern in name:
-                    if not init_warned:
-                        print("[WARNING] Initialization in modules is deprecated. "
-                            "Use initialization in model instead.")
-                        init_warned = True
-                    init_config2func(config)(param)
 
     def register_square_mask(self, max_len, is_init=False):
         if not is_init:
@@ -662,7 +640,7 @@ class LatentSequenceDecoder(nn.Module):
 
 @register_module
 class AttentionDecoder(LatentSequenceDecoder):
-    def __init__(self, layer, num_layers, max_len, init={}, load_square_mask='keep'):
+    def __init__(self, layer, num_layers, max_len, load_square_mask='keep'):
         """
         layer: dict
             input for SelfAttentionLayer
@@ -681,16 +659,6 @@ class AttentionDecoder(LatentSequenceDecoder):
         # decoder
         decoder_layer = SelfAttentionLayer_old(**layer)
         self.decoder = nn.TransformerEncoder(encoder_layer=decoder_layer, num_layers=num_layers)
-        
-        # weight init (deprecated)
-        init_warned = False
-        for layer in self.decoder.layers:
-            for param_name in init:
-                if not init_warned:
-                    print("[WARNING] Initialization in modules is deprecated. "
-                        "Use initialization in model instead.")
-                    init_warned = True
-                init_config2func(init[param_name])(layer.state_dict()[param_name]) 
 
         # define operation in load_state_dict
         self._register_load_state_dict_pre_hook(load_square_mask_pre_hooks[load_square_mask],
@@ -794,7 +762,7 @@ class AttentionDecoder(LatentSequenceDecoder):
 # LMベースのmemoryやlatentを必要としないDecoder
 @register_module
 class TransformerLMDecoder(LatentSequenceDecoder):
-    def __init__(self, layer, num_layers, init, max_len, load_square_mask='keep'):
+    def __init__(self, layer, num_layers, max_len, load_square_mask='keep'):
         """
         layer: dict
             input for SelfAttentionLayer
@@ -813,16 +781,6 @@ class TransformerLMDecoder(LatentSequenceDecoder):
         # decoder
         decoder_layer = SelfAttentionLayer_old(**layer)
         self.decoder = nn.TransformerEncoder(encoder_layer=decoder_layer, num_layers=num_layers)
-
-        # weight init (deprecated)
-        init_warned = False
-        for layer in self.decoder.layers:
-            for param_name in init:
-                if not init_warned:
-                    print("[WARNING] Initialization in modules is deprecated. "
-                        "Use initialization in model instead.")
-                    init_warned = True
-                init_config2func(init[param_name])(layer.state_dict()[param_name]) 
 
         # define operation in load_state_dict
         self._register_load_state_dict_pre_hook(load_square_mask_pre_hooks[load_square_mask], with_module=True)
