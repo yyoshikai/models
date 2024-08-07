@@ -19,10 +19,9 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from addict import Dict
-from .utils import check_leftargs
 
 class DataLoader:
-    def __init__(self, logger, datasets, seed, device, checkpoint=None, **kwargs):
+    def __init__(self, logger, datasets, seed, device, checkpoint=None):
         """
         logger: logger
         datasets: List
@@ -35,7 +34,6 @@ class DataLoader:
         seed: int
         checkpoint: str or None
         """
-        check_leftargs(self, logger, kwargs)
         if not isinstance(datasets, list):
             datasets = [datasets]
 
@@ -300,8 +298,7 @@ def get_dataloader(logger, device, type, **kwargs) -> DataLoader:
     return dataloader_type2class[type](logger=logger, device=device, **kwargs)
 
 class Dataset:
-    def __init__(self, logger, name, dfs, **kwargs):
-        check_leftargs(self, logger, kwargs)
+    def __init__(self, logger, name, dfs):
         self.name = name
         pass
     def make_batch(self, batch, idx, device):

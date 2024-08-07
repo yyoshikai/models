@@ -6,7 +6,7 @@ import torch
 from torch import optim 
 from torch.optim import lr_scheduler
 
-from .models2 import Model
+from .models import Model
 
 # From https://github.com/szc19990412/TransMIL
 class RAdam(optim.Optimizer):

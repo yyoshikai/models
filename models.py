@@ -112,9 +112,6 @@ def norm_mean(x: torch.Tensor, padding_mask: torch.Tensor):
     mean = torch.sum(x*token_mask, dim=1, keepdim=True) \
         / torch.sum(token_mask, dim=1, keepdim=True) # [B, 1, *]
     return x - mean
-    
-
-
 
 function_name2func = {
     'relu': F.relu,

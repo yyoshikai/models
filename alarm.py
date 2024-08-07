@@ -3,7 +3,6 @@
 ・与えるtが単調増加でない場合のエラー処理は未実装
 ・ListAlarm(float('inf'))はエラーになる。
 """
-from .utils import check_leftargs
 
 class Alarm:
     def __init__(self):
@@ -11,8 +10,7 @@ class Alarm:
     def __call__(self, batch):
         raise NotImplementedError
 class RangeAlarm(Alarm):
-    def __init__(self, logger, target, start=0, step=1, end=False, **kwargs):
-        check_leftargs(self, logger, kwargs)
+    def __init__(self, target, start=0, step=1, end=False):
         self.target = target
         self.start = start-step
         self.step = step
@@ -28,8 +26,7 @@ class RangeAlarm(Alarm):
             return True
         return False
 class ListAlarm(Alarm):
-    def __init__(self, logger, target, list, end=False, **kwargs):
-        check_leftargs(self, logger, kwargs)
+    def __init__(self, target, list, end=False):
         self.target = target
         self.list_ = sorted(list)
         self.list_.append(float('inf'))
@@ -47,8 +44,7 @@ class ListAlarm(Alarm):
             return True
         return False
 class SilentAlarm(Alarm):
-    def __init__(self, logger, end=False, **kwargs):
-        check_leftargs(self, logger, kwargs)
+    def __init__(self, end=False):
         self.end = end
         pass
     def __call__(self, batch):

@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ..models2 import init_config2func, function_name2func
+from ..models import init_config2func, function_name2func
 from .. import module_type2class
 
 import matplotlib.pyplot as plt

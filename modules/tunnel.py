@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from ..models2 import init_config2func, function_config2func, register_module, get_module
+from ..models import init_config2func, function_config2func, register_module, get_module
 
 class Affine(nn.Module):
     def __init__(self, weight, bias, input_size):

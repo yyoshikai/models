@@ -16,7 +16,7 @@ from tools.path import make_result_dir
 from tools.logger import default_logger
 from tools.args import load_config2
 from tools.notice import notice
-from models.models2 import Model
+from models.models import Model
 from models.process import get_process, get_processes
 from models.accumulator import get_accumulator, NumpyAccumulator, ListAccumulator
 from models.metric import get_metric
@@ -75,10 +75,10 @@ def main(config):
     processes = get_processes(config.processes)
 
     # Prepare hooks
-    accums = {aname: get_accumulator(logger=logger, **aconfig)
+    accums = {aname: get_accumulator(**aconfig)
         for aname, aconfig in config.accumulators.items()}
-    idx_accum = NumpyAccumulator(logger=logger, input='idx', org_type='np.ndarray')
-    metrics = [get_metric(logger=logger, name=mname, **mconfig) for mname, mconfig
+    idx_accum = NumpyAccumulator(input='idx')
+    metrics = [get_metric(name=mname, **mconfig) for mname, mconfig
         in config.metrics.items()]
     hooks = list(accums.values())+metrics+[idx_accum]
 

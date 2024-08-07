@@ -9,7 +9,7 @@ import torch
 import numpy as np
 import torch.nn as nn
 
-from .models2 import function_config2func, PRINT_PROCESS
+from .models import function_config2func, PRINT_PROCESS
 from tools.tools import load_module
 
 class Process:

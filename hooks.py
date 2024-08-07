@@ -12,7 +12,7 @@ class AlarmHook:
         self.logger = logger
         if not isinstance(alarm, list):
             alarm = [alarm]
-        self.alarms = [get_alarm(logger=logger, **a) for a in alarm]
+        self.alarms = [get_alarm(**a) for a in alarm]
         self.end = end
     def __call__(self, batch, model):
         ring = False
@@ -40,7 +40,7 @@ class AccumulateHook:
             checkpoint=None, fname='steps'):
         os.makedirs(result_dir, exist_ok=True)
         self.path_df = result_dir+f"/{fname}.csv"
-        self.save_alarm = get_alarm(logger=logger, **save_alarm)
+        self.save_alarm = get_alarm(**save_alarm)
         self.dfs = []
         if checkpoint is not None:
             self.dfs.append(pd.read_csv(checkpoint))

@@ -20,7 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from .. import register_module
-from ..models2 import function_name2func
+from ..models import function_name2func
 from .tunnel import Tunnel
 from .sequence import PositionalEncoding
 from ..debug import count_nan

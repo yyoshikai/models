@@ -3,18 +3,16 @@ import pickle
 import numpy as np
 import torch
 
-from .utils import check_leftargs, EMPTY
+from .utils import EMPTY
 
 class NumpyAccumulator:
-    def __init__(self, logger, input, batch_dim=0, org_type=None, **kwargs):
+    def __init__(self, input, batch_dim=0):
         """
         Parameters
         ----------
         input: [str] Key of value in batch to accumulate
-        org_type: 自動で決定することになったので使わない. deprecated.
         batch_dim: [int; default=0] Dimension of batch
         """
-        check_leftargs(self, logger, kwargs)
         self.input = input
         self.converter = None
         self.batch_dim = batch_dim
@@ -40,14 +38,12 @@ class NumpyAccumulator:
                 raise ValueError(f"{self.__class__}: Unsupported input: {type(input)}")
         self.accums.append(self.converter(batch[self.input]))
 class ListAccumulator:
-    def __init__(self, logger, input, batch_dim=None, org_type='torch.tensor', **kwargs):
+    def __init__(self, input, batch_dim=None):
         """
         Parameters
         ----------
         input: [str] Key of value in batch to accumulate
-        org_type: deprecated.
         """
-        check_leftargs(self, logger, kwargs)
         self.input = input
         self.batch_dim = batch_dim
         self.converter = None
@@ -69,7 +65,7 @@ class ListAccumulator:
         input = batch[self.input]
         if self.converter is None:
             if isinstance(input, list):
-                assert self.batch_dim is None, f"batch_dim cannot be defined when org_type is list"
+                assert self.batch_dim is None, f"batch_dim cannot be defined when data is list"
                 self.converter = EMPTY
             else:
                 if self.batch_dim is None: self.batch_dim = 0

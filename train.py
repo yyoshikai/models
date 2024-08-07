@@ -10,12 +10,11 @@ import sys, os
 os.environ.setdefault("TOOLS_DIR", "/workspace")
 sys.path += [os.environ["TOOLS_DIR"]]
 import pickle
-import importlib
 import time
 import random
 import shutil
 from copy import deepcopy
-
+from contextlib import nullcontext
 
 import yaml
 from addict import Dict
@@ -33,8 +32,7 @@ from models.dataset import get_dataloader
 from models.accumulator import get_accumulator, NumpyAccumulator
 from models.metric import get_metric
 from models.optimizer import get_scheduler
-from models.process import get_process, get_processes
-from tools.tools import nullcontext, load_module
+from models.process import get_processes
 from models.hooks import AlarmHook, hook_type2class, get_hook
 from models import Model
 from models.optimizer import ModelOptimizer
@@ -60,11 +58,8 @@ def set_rstate(config):
         torch.cuda.set_rng_state_all(torch.load(config.cuda))
 
 class NoticeAlarmHook(AlarmHook):
-    def __init__(self, logger, studyname=None, **kwargs):
+    def __init__(self, logger, studyname, **kwargs):
         super().__init__(logger=logger, **kwargs)
-        if studyname is None:
-            logger.warning("studyname not specified in NoticeAlarm.")
-            studyname =  "(study noname)"
         self.studyname = studyname
     def ring(self, batch, model):
         if 'end' in batch:
@@ -88,8 +83,7 @@ def main(config, args=None):
     logger = default_logger(result_dir+"/log.txt", trconfig.verbose.loglevel.stream or 'info', trconfig.verbose.loglevel.file or 'debug')
     with open(result_dir+"/config.yaml", mode='w') as f:
         yaml.dump(config.to_dict(), f, sort_keys=False)
-    if args is not None:
-        logger.warning(f"options: {' '.join(args)}")
+    logger.warning(f"options: {' '.join(args)}")
 
     # environment
     ## device
@@ -127,34 +121,12 @@ def main(config, args=None):
     model.to(DEVICE)
 
     # prepare optimizer
-    if 'optimizers' not in trconfig:
-        # For compatibility
-        optimizers = {
-            'loss': {
-                'optimizer': trconfig.optimizer,
-                'loss_names': trconfig.loss_names,
-                'init_weight': trconfig.get('optimizer_init_weight', None),
-                'opt_freq': trconfig.schedule.opt_freq,
-                'normalize': trconfig.regularize_loss.normalize,
-                'clip_grad_norm': trconfig.regularize_loss.get('clip_grad_norm'),
-                'clip_grad_value': trconfig.regularize_loss.get('clip_grad_value'),
-                'filename': 'optimizer'
-            }
-        }
-        if trconfig.regularize_loss.normalize_batch_size:
-            assert trconfig.regularize_loss.normalize_item is None
-            optimizers['loss']['normalize_item'] = 'batch_size'
-        elif trconfig.regularize_loss.normalize_item:
-            optimizers['loss']['normalize_item'] = trconfig.regularize_loss.normalize_item
-    else:
-        optimizers = trconfig.optimizers
     optimizers = {
-        oname: ModelOptimizer(name=oname, model=model, dl_train=dl_train, n_epoch=n_epoch,
-            **oconfig)
-            for oname, oconfig in optimizers.items()}
+        oname: ModelOptimizer(name=oname, model=model, dl_train=dl_train, n_epoch=n_epoch, **oconfig)
+        for oname, oconfig in optimizers.items()
+    }
     
     # process
-
     train_processes = get_processes(trconfig.train_loop)
     val_processes = get_processes(trconfig.val_loop, 
             trconfig.train_loop if trconfig.val_loop_add_train else None)
@@ -176,9 +148,9 @@ def main(config, args=None):
     minus_abortion: dict = trconfig.mabortion
 
     # Prepare metrics
-    accumulators = [ get_accumulator(logger=logger, **acc_config) for acc_config in trconfig.accumulators ]
-    idx_accumulator = NumpyAccumulator(logger, input='idx', org_type='numpy')
-    metrics = [ get_metric(logger=logger, name=name, **met_config) for name, met_config in trconfig.metrics.items() ]
+    accumulators = [ get_accumulator(**acc_config) for acc_config in trconfig.accumulators ]
+    idx_accumulator = NumpyAccumulator(input='idx')
+    metrics = [ get_metric(name=name, **met_config) for name, met_config in trconfig.metrics.items() ]
     scores_df = pd.read_csv(trconfig.stocks.score_df, index_col="Step") \
         if trconfig.stocks.score_df else  pd.DataFrame(columns=[], dtype=float)
     class ValidationAlarmHook(AlarmHook):

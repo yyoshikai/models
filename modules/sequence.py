@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from ..models2 import function_name2func, function_config2func, init_config2func, register_module
+from ..models import function_name2func, function_config2func, init_config2func, register_module
 
 
 

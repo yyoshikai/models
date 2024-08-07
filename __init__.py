@@ -23,7 +23,7 @@ def register_module(cls):
     module_type2class[cls.__name__] = cls
     return cls
 
-from .models2 import *
+from .models import *
 from .dataset import get_dataloader
 from .process import get_process, get_processes
 
@@ -34,22 +34,22 @@ for cls in [nn.MSELoss, nn.BCEWithLogitsLoss]:
 for cls in [nn.Linear, nn.ReLU, nn.GELU, nn.LayerNorm, nn.BatchNorm1d]:
     module_type2class[cls.__name__] = cls
 
-from .modules2.sequence import *
+from .modules.sequence import *
 
-from .modules2.poolers import *
+from .modules.poolers import *
 for cls in [MeanPooler, StartPooler, MaxPooler, MeanStartMaxPooler, 
     MeanStartEndMaxPooler, MeanStdStartEndMaxMinPooler, NoAffinePooler, NemotoPooler, 
     GraphPooler, GraphMeanMaxPooler, GraphStartMeanMaxPooler, GraphPooler2]:
     module_type2class[cls.__name__] = cls
 
-from .modules2.graph_transformer import *
+from .modules.graph_transformer import *
 for cls in [GraphAttentionLayer, GraphEncoder, AtomEmbedding]:
     module_type2class[cls.__name__] = cls
 
-from .modules2 import grover, image, unimol, unimol2, vae, criterion
+from .modules import grover, image, unimol, unimol2, vae, criterion
 
 
-from .modules2.ssl import *
+from .modules.ssl import *
 for cls in [BarlowTwinsCriterion, MolCLIPCriterion]:
     module_type2class[cls.__name__] = cls
 
@@ -61,8 +61,8 @@ dataset_type2class['grover'] = GroverDataset
 dataset_type2class['grover2'] = Grover2Dataset
 
 # function
-from .models2 import function_name2func
+from .models import function_name2func
 
-from .modules2.sequence import get_token_size
+from .modules.sequence import get_token_size
 for func in [get_token_size]:
     function_name2func[func.__name__] = func

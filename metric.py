@@ -6,13 +6,11 @@ from collections import defaultdict
 import itertools
 import numpy as np
 import torch
-from .utils import check_leftargs
 from sklearn.metrics import roc_auc_score, average_precision_score, \
     mean_squared_error, mean_absolute_error, r2_score
 
 class Metric:
-    def __init__(self, logger, name, **kwargs):
-        check_leftargs(self, logger, kwargs)
+    def __init__(self, name, **kwargs):
         self.name = name
     def init(self):
         raise NotImplementedError
@@ -24,7 +22,7 @@ class Metric:
         raise NotImplementedError
 
 class BinaryMetric(Metric):
-    def __init__(self, logger, name, input, target, is_logit=None, is_multitask=False, 
+    def __init__(self, name, input, target, is_logit=None, is_multitask=False, 
             input_process=None, task_names=None, mean_multitask=False, **kwargs):
         """
         Parameters
@@ -41,7 +39,7 @@ class BinaryMetric(Metric):
             'sigmoid': sigmoid function is applied (is_logit must be True)
         task_names: List[str] or None
         """
-        super().__init__(logger, name, **kwargs)
+        super().__init__(name, **kwargs)
         self.input = input
         self.target = target
         self.is_logit = is_logit
@@ -121,8 +119,8 @@ class R2Metric(BinaryMetric):
         return r2_score(y_true=y_true, y_pred=y_score)
     
 class GANAUROCMetric(Metric):
-    def __init__(self, logger, name, real, fake):
-        super().__init__(logger, name)
+    def __init__(self, name, real, fake):
+        super().__init__(name)
         self.real_name = real
         self.fake_name = fake
     def init(self):
@@ -158,8 +156,8 @@ class ValueMetric(MeanMetric):
     def __call__(self, batch):
         self.values.append(batch[self.name].cpu().numpy())
 class PerfectAccuracyMetric(MeanMetric):
-    def __init__(self, logger, name, input, target, pad_token, **kwargs):
-        super().__init__(logger, name, **kwargs)
+    def __init__(self, name, input, target, pad_token, **kwargs):
+        super().__init__(name, **kwargs)
         self.name = name
         self.input = input
         self.target = target
@@ -168,8 +166,8 @@ class PerfectAccuracyMetric(MeanMetric):
         self.values.append(torch.all((batch[self.input] == batch[self.target])
             ^(batch[self.target] == self.pad_token), axis=1).cpu().numpy())
 class PartialAccuracyMetric(MeanMetric):
-    def __init__(self, logger, name, input, target, pad_token, **kwargs):
-        super().__init__(logger, name, **kwargs)
+    def __init__(self, name, input, target, pad_token, **kwargs):
+        super().__init__(name, **kwargs)
         self.name = name
         self.input = input
         self.target = target
@@ -191,5 +189,5 @@ metric_type2class = {
     'perfect': PerfectAccuracyMetric,
     'partial': PartialAccuracyMetric,
 }
-def get_metric(logger, name, type, **kwargs) -> Metric:
-    return metric_type2class[type](logger=logger, name=name, **kwargs)
+def get_metric(name, type, **kwargs) -> Metric:
+    return metric_type2class[type](name=name, **kwargs)
