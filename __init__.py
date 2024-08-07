@@ -1,4 +1,20 @@
+import os
+import subprocess
 import functools
+
+
+def get_git_version():
+    git_out = subprocess.run('git branch', shell=True, 
+        capture_output=True, text=True, cwd=os.path.dirname(__file__))
+    if git_out.returncode != 0:
+        return None
+    for line in git_out.stdout.splitlines():
+        if line[0] == '*':
+            return line.split(' ')[1]
+    else:
+        return None
+
+print(f"[NOTICE] Git branch of models is '{get_git_version()}'.")
 
 module_type2class = {}
 def register_module(cls):

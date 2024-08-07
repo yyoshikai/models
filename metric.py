@@ -17,11 +17,11 @@ class Metric:
     def init(self):
         raise NotImplementedError
     def add(self, batch):
-        raise NotImplementedError
+        raise NotImplementedError("Use Metric.__call__ instead.")
     def calc(self, scores: dict):
         raise NotImplementedError
     def __call__(self, batch):
-        self.add(batch)
+        raise NotImplementedError
 
 class BinaryMetric(Metric):
     def __init__(self, logger, name, input, target, is_logit=None, is_multitask=False, 
@@ -59,7 +59,7 @@ class BinaryMetric(Metric):
     def init(self):
         self.targets = []
         self.inputs = []
-    def add(self, batch):
+    def __call__(self, batch):
         self.targets.append(batch[self.target].cpu().numpy())
         input = batch[self.input]
         if self.is_logit is None:
@@ -128,7 +128,7 @@ class GANAUROCMetric(Metric):
     def init(self):
         self.real_preds = []
         self.fake_preds = []
-    def add(self, batch):
+    def __call__(self, batch):
         self.real_preds.append(batch[self.real_name].cpu().numpy())
         self.fake_preds.append(batch[self.fake_name].cpu().numpy())
     def calc(self, scores):
@@ -152,10 +152,10 @@ class MeanMetric(Metric):
         else:
             values = np.concatenate(self.values)
         if len(values) > 0:
-            scores[self.name] = np.mean(np.concatenate(values))
+            scores[self.name] = np.mean(values)
         return scores
 class ValueMetric(MeanMetric):
-    def add(self, batch):
+    def __call__(self, batch):
         self.values.append(batch[self.name].cpu().numpy())
 class PerfectAccuracyMetric(MeanMetric):
     def __init__(self, logger, name, input, target, pad_token, **kwargs):
@@ -164,7 +164,7 @@ class PerfectAccuracyMetric(MeanMetric):
         self.input = input
         self.target = target
         self.pad_token = pad_token
-    def add(self, batch):
+    def __call__(self, batch):
         self.values.append(torch.all((batch[self.input] == batch[self.target])
             ^(batch[self.target] == self.pad_token), axis=1).cpu().numpy())
 class PartialAccuracyMetric(MeanMetric):
@@ -174,7 +174,7 @@ class PartialAccuracyMetric(MeanMetric):
         self.input = input
         self.target = target
         self.pad_token = pad_token
-    def add(self, batch):
+    def __call__(self, batch):
         target_seq = batch[self.target]
         pred_seq = batch[self.input]
         pad_mask = (target_seq != self.pad_token).to(torch.int)

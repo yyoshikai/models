@@ -37,7 +37,6 @@ from models.process import get_process, get_processes
 from tools.tools import nullcontext, load_module
 from models.hooks import AlarmHook, hook_type2class, get_hook
 from models import Model
-from models.models2 import PRINT_PROCESS
 from models.optimizer import ModelOptimizer
 
 def save_rstate(dirname):
@@ -157,24 +156,8 @@ def main(config, args=None):
     # process
 
     train_processes = get_processes(trconfig.train_loop)
-    val_processes = trconfig.val_loop
-    if isinstance(val_processes, list):
-        val_processes = [get_process(**process) for process in trconfig.val_loop]
-        if trconfig.val_loop_add_train: 
-            val_processes = train_processes + val_processes
-    elif isinstance(val_processes, dict):
-        if 'path' in val_processes: # 関数を指定する場合
-            module = load_module(val_processes['path'])
-            val_processes = module.__getattribute__(val_processes.function)
-        else:
-            val_processes = list(val_processes.values())
-            if trconfig.val_loop_add_train: 
-                val_processes += list(trconfig.train_loop)
-            val_times = [process.pop('order') for process in val_processes]
-            val_processes = [val_processes[i] for i in np.argsort(val_times)]
-            val_processes = [get_process(**process) for process in val_processes]
-    else:
-        raise ValueError
+    val_processes = get_processes(trconfig.val_loop, 
+            trconfig.train_loop if trconfig.val_loop_add_train else None)
 
     class SchedulerAlarmHook(AlarmHook):
         def __init__(self, scheduler, optimizer='loss', **kwargs):

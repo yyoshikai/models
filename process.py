@@ -143,13 +143,17 @@ def get_process_from_config(config):
     return get_process(**config)
 
 def get_processes(config, tconfig=None):
+    if len(config) == 0:
+        assert tconfig is not None
+        return get_processes(tconfig)
     if isinstance(config, list):
         processes0 = [get_process(**p) for p in config]
         if tconfig is None:
             processes = processes0
+        elif isinstance(tconfig, list):
+            processes = [get_process(**p) for p in tconfig]+processes0
         elif isinstance(tconfig, dict) and 'path' in tconfig:
-            tmodule = load_module(config['path'])
-            tprocesses = tmodule.__getattribute__(config['function'])
+            tprocesses = get_processes(tconfig)
             def processes(model, batch):
                 tprocesses(model, batch)
                 for process in processes0:
@@ -164,6 +168,13 @@ def get_processes(config, tconfig=None):
         processes0 = module.__getattribute__(config['function'])
         if tconfig is None:
             processes = processes0
+        elif isinstance(tconfig, list):
+            tprocesses = [get_process(**p) for p in tconfig]
+            def processes(model, batch):
+                for tprocess in tprocesses:
+                    tprocess(model, batch)
+                processes0(model, batch)
+                return batch
         elif isinstance(tconfig, dict) and 'path' in tconfig:
             tmodule = load_module(config['Dict'])
             tprocesses = tmodule.__getattribute__(config['function'])
