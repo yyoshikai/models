@@ -37,6 +37,7 @@ training:
   train_loop: R[list]
   val_loop: R[list]
   val_loop_add_train: O(False)[bool]
+  
 
   n_epoch: O[int] # tqdmの表示, schedulerの設定に使う。それらに使わない場合設定不要。
   pre_hooks: O[dict]
@@ -55,6 +56,14 @@ training:
   - level: R[warning, info, debug等]
     type: R[value, shape等]
     name: R
+
+  notice:
+    studyname: $studyname
+    end: true
+    points:
+      step:
+        step: 25000
+      epoch: [1]
   
 model:
   

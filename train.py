@@ -36,6 +36,7 @@ from models.process import get_processes
 from models.hooks import AlarmHook, hook_type2class, get_hook
 from models import Model
 from models.optimizer import ModelOptimizer
+from models.utils import get_set
 
 def save_rstate(dirname):
     os.makedirs(dirname, exist_ok=True)
@@ -45,6 +46,7 @@ def save_rstate(dirname):
         pickle.dump(np.random.get_state(), f)
     torch.save(torch.get_rng_state(), f"{dirname}/torch.pt")
     torch.save(torch.cuda.get_rng_state_all(), f"{dirname}/cuda.pt")
+
 def set_rstate(config):
     if 'random' in config:
         with open(config.random, 'rb') as f:
@@ -57,27 +59,10 @@ def set_rstate(config):
     if 'cuda' in config:
         torch.cuda.set_rng_state_all(torch.load(config.cuda))
 
-class NoticeAlarmHook(AlarmHook):
-    def __init__(self, logger, studyname, **kwargs):
-        super().__init__(logger=logger, **kwargs)
-        self.studyname = studyname
-    def ring(self, batch, model):
-        if 'end' in batch:
-            notice(f"models/train: {self.studyname} finished!")
-        else:
-            message = f"models/train: {self.studyname} "
-            for alarm in self.alarms:
-                message += f"{alarm.target} {batch[alarm.target]} "
-            message += "finished!"
-            notice(message)
-hook_type2class['notice_alarm'] = NoticeAlarmHook
-
 @noticeerror(from_=f"train.py in {os.getcwd()}", notice_end=False)
 def main(config, args=None):
 
     # make training
-    ## replacement of config: add more when needed
-    config = subs_vars(config, {"$TIMESTAMP": timestamp()})
     trconfig = config.training
     result_dir = make_result_dir(**trconfig.result_dir)
     logger = default_logger(result_dir+"/log.txt", trconfig.verbose.loglevel.stream or 'info', trconfig.verbose.loglevel.file or 'debug')
@@ -146,6 +131,11 @@ def main(config, args=None):
     abortion: dict = trconfig.abortion
     abort_time = abortion.pop('time', None)
     minus_abortion: dict = trconfig.mabortion
+
+    # Prepare notice
+    notice_studyname = trconfig.notice.pop('studyname', "")
+    notice_end = bool(trconfig.notice.end)
+    notice_points = {key: get_set(value) for key, value in trconfig.notice.points}
 
     # Prepare metrics
     accumulators = [ get_accumulator(**acc_config) for acc_config in trconfig.accumulators ]
@@ -287,9 +277,18 @@ def main(config, args=None):
             del batch
             torch.cuda.empty_cache()
             if pbar is not None: pbar.update(1)
+
+            # notice
+            for key, values in notice_points.items():
+                if batch[key] in values:
+                    notice(f"models/train.py {notice_studyname} {key} {batch[key]} finished!")
+    if notice_end:
+        notice(f"models/train.py: {notice_studyname} finished!")
     for hook in pre_hooks+post_hooks:
         hook(batch, model)
 
 if __name__ == '__main__':
     config = load_config2("", default_configs=['base.yaml'])
+    ## replacement of config: add more when needed
+    config = subs_vars(config, {"$TIMESTAMP": timestamp()})
     main(config, sys.argv)
