@@ -1,256 +1,14 @@
-"""
-240112 DataLoaderのdatasetsのconfigをupdateするように変更
-240126 NormalDatasetのget_idxsを修正(最初が空の配列になっていた。numpy.splitの仕様)
-240601 load_datasetをやや変更。もしかしたら挙動が変わっているかもしれない。
-"""
-
 import sys, os
-import inspect
-import itertools
-from copy import deepcopy
 import math
-
-import yaml
-import gc
 import pickle
+from logging import getLogger
+from collections import OrderedDict
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
+from torch.utils.data import Sampler, BatchSampler
 from torch.nn.utils.rnn import pad_sequence
-from addict import Dict
-
-class DataLoader:
-    def __init__(self, logger, datasets, seed, device, checkpoint=None):
-        """
-        logger: logger
-        datasets: List
-        - dfs:
-            (df_name): dict
-              Input for pd.read_csv
-          datasets:
-            (data_name): dict
-              Input for get_dataset
-        seed: int
-        checkpoint: str or None
-        """
-        if not isinstance(datasets, list):
-            datasets = [datasets]
-
-        dset_configs = []
-        config = Dict()
-        for dset_config in datasets:
-            config.update(dset_config)
-            cur_config = deepcopy(config)
-            dset_configs.append(cur_config)
-        
-        self.dset_configss = dset_configs
-        for dset_config in self.dset_configss:
-            for df_config in dset_config.dfs.values():
-                assert ('path' in df_config) != ('filepath_or_buffer' in df_config) # 240112 datasetsのupdate機能のため念のため
-                if 'path' in df_config:
-                    df_config['filepath_or_buffer'] = df_config.pop('path')
-        self.n_dset = len(datasets)
-        self.rstate = np.random.RandomState(seed=seed)
-        self.logger = logger
-        self.device = device
-        self.epoch = self.step = 0
-        
-        # iterating @get_batch
-        self.i_cur_dset = 0
-        self.cur_idxs = None
-        self.i_cur_idx = 0
-
-        # dataset loading @dset
-        self._i_cur_dset = None
-        self._cur_dset = None
-
-        # load chekcpoint
-        if checkpoint is not None:
-            with open(f"{checkpoint}/config.yaml") as f:
-                config = Dict(yaml.load(f, yaml.Loader))
-            self._i_cur_dset = config.i_dset
-            self.i_cur_idx = config.i_current_idx
-            self.epoch = config.epoch
-            self.step = config.step
-            with open(f"{checkpoint}/current_idxs.pkl", 'rb') as f:
-                self.cur_idxs = pickle.load(f)
-            with open(f"{checkpoint}/rstate.pkl", 'rb') as f:
-                self.rstate.set_state(pickle.load(f))
-
-    def dset(self, i):
-        if self._i_cur_dset != i:
-            del self._cur_dset
-            gc.collect()
-            dfs = {}
-            for df_name, df_config in self.dset_configss[i].dfs.items():
-                self.logger.info(f"Loading {df_config.filepath_or_buffer} ...")
-                dfs[df_name] = pd.read_csv(**df_config)
-            self._cur_dset = {name: get_dataset(logger=self.logger, name=name, dfs=dfs, **dset_config) 
-                for name, dset_config in self.dset_configss[i].datasets.items()}
-            del dfs
-            self._i_cur_dset = i
-            self.cur_idxs = None
-        return self._cur_dset
-
-    def get_batch(self, batch=None):
-        dset = self.dset(self.i_cur_dset)
-        if self.cur_idxs is None:
-            self.cur_idxs = self.get_idxs(dset)
-
-        idx = self.cur_idxs[self.i_cur_idx].astype(int)
-        if batch is None: batch = {}
-        batch['idx'] = idx
-        for d in dset.values():
-            d.make_batch(batch, idx, self.device)
-        batch['batch_size'] = len(batch['idx'])
-        self.i_cur_idx += 1
-        self.step += 1
-        if self.i_cur_idx == len(self.cur_idxs):
-            self.i_cur_idx = 0
-            self.cur_idxs = None
-            self.i_cur_dset = (self.i_cur_dset+1)%self.n_dset
-            if self.i_cur_dset == 0:
-                self.epoch += 1
-        return batch
-    def __iter__(self):
-        self.epoch = self.i_cur_dset = self.i_cur_idx = 0
-        # self.cur_idxs = None
-        # shuffleをするかどうか?
-        while self.epoch == 0:
-            yield self.get_batch()
-    def get_idxs(self, dsets):
-        raise NotImplementedError    
-    def checkpoint(self, path_checkpoint):
-        os.makedirs(path_checkpoint)
-        config = {
-            'i_dset': self._i_cur_dset, 
-            'i_current_idx': self.i_cur_idx,
-            'epoch': self.epoch,
-            'step': self.step, 
-        }
-        with open(f"{path_checkpoint}/config.yaml", 'w') as f:
-            yaml.dump(config, f)
-        with open(f"{path_checkpoint}/rstate.pkl", 'wb') as f:
-            pickle.dump(self.rstate.get_state(), f)
-        with open(f"{path_checkpoint}/current_idxs.pkl", 'wb') as f:
-            pickle.dump(self.cur_idxs, f)
-    def get_len(self, force=False):
-        if self.n_dset == 1:
-            dset = self.dset(0)
-            return len(self.get_idxs(dset))
-        else:
-            if force:
-                length = 0
-                for i in range(len(self.dset_configss)):
-                    dset = self.dset(i)
-                    length += len(self.get_idxs(dset))
-
-                return length
-            else:
-                return None
-
-class NormalDataLoader(DataLoader):
-    def __init__(self, logger, device, 
-            datasets, seed, batch_size, checkpoint=None, drop_last=False):
-        super().__init__(logger=logger, datasets=datasets, seed=seed,
-            device=device, checkpoint=checkpoint)
-        self.batch_size = batch_size
-        if not isinstance(datasets, list): datasets = [datasets]
-        self.dset_name0 = list(datasets[0].datasets.keys())[0]
-        self.drop_last = drop_last
-    def get_idxs(self, dset):
-        dset_size = len(dset[self.dset_name0])
-        idxs = np.arange(dset_size, dtype=int)
-        self.rstate.shuffle(idxs)
-        idxs = np.split(idxs, range(self.batch_size, dset_size, self.batch_size))
-        if self.drop_last and len(idxs[-1]) < self.batch_size:
-            idxs = idxs[:-1]
-        return idxs
-    
-class BucketDataLoader(DataLoader):
-    def __init__(self, logger, device, datasets, seed, buckets, batch_sizes, checkpoint=None):
-        """
-        2つ以上のデータも可能
-        add_upper_margin, add_lower_marginはないので, 0, infをbucketsのbinsに加えて下さい
-
-        Parameters
-        ----------
-        buckets: dict
-            {dataset_name(str): bins(list[int])}
-        batch_sizes: list[int]
-        
-        """
-        super().__init__(logger=logger, datasets=datasets, seed=seed,
-            device=device, checkpoint=checkpoint)
-        
-        self.buckets = buckets
-        self.batch_sizes = batch_sizes
-
-    def get_idxs(self, dsets):
-        d2b = None
-        for dset_name, bins in self.buckets.items():
-            lengths = dsets[dset_name].lengths
-            d2b0 = np.digitize(lengths, bins) - 1
-            if d2b is None: 
-                d2b = d2b0
-            else:
-                d2b = np.maximum(d2b, d2b0)
-        
-        idxs = []
-        for ib, batch_size in enumerate(self.batch_sizes):
-            bucket_idxs = np.where(d2b == ib)[0]
-            if len(bucket_idxs) == 0: continue
-            self.rstate.shuffle(bucket_idxs)
-            idxs += [bucket_idxs[i:i+batch_size] for i in range(0, len(bucket_idxs), batch_size)]
-        idxs = np.array(idxs, dtype=object)
-        self.rstate.shuffle(idxs)
-        return idxs
-
-dataloader_type2class = {
-    'normal': NormalDataLoader,
-    'bucket': BucketDataLoader,
-}
-
-def get_dataloader(logger, device, type, **kwargs) -> DataLoader:
-    return dataloader_type2class[type](logger=logger, device=device, **kwargs)
-
-class Dataset:
-    def __init__(self, logger, name, dfs):
-        self.name = name
-        pass
-    def make_batch(self, batch, idx, device):
-        """
-        Parameters
-        ----------
-        batch: dict
-            dict into which batch element is to be input.
-            ['idxs']: indices in dataset
-        
-        """
-        raise NotImplementedError
-    def __len__(self):
-        raise NotImplementedError
-
-    def calc_split(self, dfs, df, col, idx=None):
-        split: np.ndarray = dfs[df][col].values
-        if idx is not None:
-            if isinstance(idx, list):
-                idx = set(idx)
-                split = np.frompyfunc(lambda x: x in idx, nin=1, nout=1)(split).astype(bool)
-            else:
-                split = split == idx
-        else:
-            split = split.astype(bool)
-        return split
-
-dataset_type2class = {}
-def register_dataset(name):
-    def register_dataset_cls(cls):
-        assert issubclass(cls, Dataset)
-        dataset_type2class[name] = cls
-        return cls
-    return register_dataset_cls
+logger = getLogger(__name__)
 
 torch_name2dtype = {
     'int': torch.int,
@@ -258,267 +16,139 @@ torch_name2dtype = {
     'float': torch.float,
     'bool': torch.bool,
 }
-numpy_name2dtype = {
+name2dtype = {
     'int': int,
     'float': float,
     'bool': bool,
+    'object': object,
 }
 
-@register_dataset('string')
-class StringDataset(Dataset):
-    def __init__(self, logger, name, dfs, 
-            padding_value, list=None, path_list=None,
-            len_name=None, shape=[], dtype='long', dim=1, split=None, **kwargs):
-        """
-        Parameters
-        ----------
-        padding_value(int): Pad token.
-        list(list): List of raw dataset.
-        path_list(str): Path to pickle file of list.
-            Either 'list' or 'path_list' must be specified.
-        len_name(Optional, str): Name of string length in batch
-        shape(list of int): Additional shape of each datapoint.
-        dtype(str): Name of dtype. Must be in torch_name2dtype
-        dim: Dimension of variable length. 
-        split: dict, optional
-            Input for self.calc_split()
-        
-        Shape of each data in list should be [length, ...(dim), length, *shape] 
-        """
-        super().__init__(logger, name, dfs, **kwargs)
-        if (list is None) == (path_list is None):
-            raise ValueError(f"Either list({list}) XOR path_list({path_list}) has to be specified.")
-        self.len_name = len_name or f"{self.name}_len"
-        # Load str_list
-        if list is not None:
-            self.str_list = list
-        else:
-            logger.info(f"Loading {path_list} ...")
-            with open(path_list, 'rb') as f:
-                self.str_list = pickle.load(f)
-        if split:
-            split = self.calc_split(dfs, **split)
-            self.str_list = list(itertools.compress(self.str_list, split))
+class Dataset(torch.utils.data.Dataset):
+    def __init__(self, name):
+        self.name = name
+    def collate(self, batch: dict, data: tuple[torch.Tensor], device: torch.device): # default collate
+        batch[self.name] = torch.stack(data, dim=0).to(device)
 
-        self.lengths = torch.tensor([len(string) for string in self.str_list], 
-            dtype=torch.long)
-        self.shape = tuple(shape)
+class SequenceDataset(Dataset):
+    logger = getLogger(f"{__module__}.{__qualname__}")
+
+    def __init__(self, name, dfs,
+            path, padding_value, dtype='long', dim=1, shape=None):
+        super().__init__(name)
+        with open(path, 'rb') as f:
+            self.sequences = pickle.load(f)
+        self.lengths = np.array([len(s) for s in self.sequences], dtype=int)
+        self.padding_value = padding_value
         self.dtype = torch_name2dtype[dtype]
         self.dim = dim
-        logger.info(f"Max length of {name}: {torch.max(self.lengths)}")
+        if self.dim == 1:
+            if shape is not None:
+                self.logger.warning(f"dim is 1 and shape({shape}) is ignored.")
+        else:
+            self.shape = shape or []
 
-        # Other settings
-        self.padding_value = padding_value
-
-    def make_batch(self, batch, idx, device):
-        n = len(idx)
-        batch_lengths = self.lengths[idx].to(device)
-        batch[self.len_name] = batch_lengths
-        batch_strings = torch.full((n, )+(torch.max(batch_lengths), )*self.dim+self.shape,
-            fill_value=self.padding_value, dtype=self.dtype)
-        for i, idx in enumerate(idx):
-            batch_strings[(i, )+(slice(batch_lengths[i]), )*self.dim] = torch.tensor(self.str_list[idx], dtype=self.dtype)
-        batch[self.name] = batch_strings.to(device)
+    def __getitem__(self, index):
+        return torch.tensor(self.sequences(index), dtype=self.dtype)
+    
     def __len__(self):
-        return len(self.str_list)
+        return len(self.sequences)
+
+    def collate(self, batch: dict, data: tuple[torch.Tensor], device: torch.device):
+        data_lens = torch.tensor([len(d) for d in data], dtype=torch.long, device=device)
+        batch[self.name+'_len'] = data_lens
+        if self.dim == 1:
+            batch[self.name] = pad_sequence(data, batch_first=True, padding_value=self.padding_value)
+        else:
+            batch_sequences = torch.full((len(data), )+(torch.max(data_lens), )*self.dim+self.shape,
+                fill_value=self.padding_value, dtype=self.dtype)
+            for i, d in enumerate(data):
+                batch_sequences[(i, )+(slice(data_lens[i]), )*self.dim] = d
+            batch[self.name] = batch_sequences.to(device)
+
+    def get_lengths(self): # For bucketing
+        return self.lengths
+
 
 class ArrayDataset(Dataset):
-    def __init__(self, logger, name, dfs, dtype, atype='torch', **kwargs):
-        super().__init__(logger, name, dfs, **kwargs)
-        self.type = atype
-        if self.type in ['numpy', 'np']:
-            self.type = 'numpy'
-        # check dtype  
-        if self.type == 'torch':
-            self.dtype = torch_name2dtype[dtype]
-        elif self.type == 'numpy':
-            self.dtype = numpy_name2dtype[dtype]
+    def __init__(self, name, dfs,
+                dtype='float', atype='torch', getitem_subs=False, **kwargs):
+        super().__init__(name)
+        data = self.init_data(dfs=dfs, **kwargs)
+        if atype in ['numpy', 'np']: 
+            self.data = np.array(data, dtype=name2dtype[dtype])
+        elif atype == 'torch':
+            self.data = torch.tensor(data, dtype=torch_name2dtype[dtype])
         else:
-            raise ValueError(f"Unsupported atype: {atype}")
-        self.array = None
-    def make_batch(self, batch, idx, device=None):
-        item = self.array[idx]
-        if device is not None:
-            item = item.to(device)
-        batch[self.name] = item
-    def __len__(self):
-        return len(self.array)
+            raise ValueError
+        if getitem_subs: # こういう実装してみたが, 分かりやすいか？
+            self.getitemer = lambda index: self.data[index]
+            if isinstance(self.data, np.ndarray):
+                self.collator = lambda data: np.stack(data, axis=0)
+            else:
+                self.collator = lambda data: torch.stack(data, dim=0)
+        else:
+            self.getitemer = lambda index: index
+            self.collator = lambda data: self.data[data]
 
-@register_dataset('ndarray')
+    def init_data(self, dfs, **kwargs):
+        raise NotImplementedError
+
+    def __getitem__(self, index):
+        return self.getitemer(index)
+    
+    def collate(self, batch: dict, data: tuple[int], device: torch.device):
+        data = self.collator(data)
+        if isinstance(data, torch.Tensor):
+            data = data.to(device)
+        batch[self.name] = data
+        
 class NdarrayDataset(ArrayDataset):
-    def __init__(self, logger, name, dfs, dtype, path, cols=None, atype='torch',split=None,  **kwargs):
-        super().__init__(logger, name, dfs, dtype, atype, **kwargs)
-        ext_path = os.path.splitext(path)[-1][1:]
-        if ext_path in ['npy', 'npz']:
-            array = np.load(path)
-            if self.type == 'torch':
-                array = torch.tensor(array)
-        elif ext_path in ['pt']:
-            array = torch.load(path)
-            if self.type == 'numpy':
-                array = array.numpy()
-        else:
-            raise ValueError(f"Unsupported type of ndarray: {path}")
-        if self.type == 'torch':
-            array = array.to(self.dtype)
-        else:
-            array = array.astype(self.dtype)
-        if cols is not None:
-            array = array[:, cols]
-        if split:
-            split = self.calc_split(dfs, **split)
-            array = array(split)
-        self.array = array
-        self.size = ['batch_size'] + list(self.array.shape[1:])
+    def init_data(self, dfs, path, cols=None):
+        data = np.load(path)
+        if cols is not None: data = data[:, cols]
+        return data
 
-@register_dataset('series')
 class SeriesDataset(ArrayDataset):
-    def __init__(self, logger, name, dfs, 
-        df, dtype, col, atype='torch', split=None, **kwargs):
-        super().__init__(logger, name, dfs, dtype, atype, **kwargs)
-        array = dfs[df][col].values
-        if split:
-            split = self.calc_split(dfs, **split)
-            array = array[split]
-        if self.type == 'torch':
-            self.array = torch.tensor(array, dtype=self.dtype)
-        elif self.type == 'numpy':
-            self.array = array.astype(self.dtype)
+    def init_data(self, dfs, df, col):
+        return dfs[df][col]
 
-@register_dataset('dataframe')
 class DataFrameDataset(ArrayDataset):
-    def __init__(self, logger, name, dfs,
-        df, dtype, cols=None, atype='torch', split=None, **kwargs):
-        super().__init__(logger, name, dfs, dtype, atype, **kwargs)
-        if cols is None: cols = dfs[df].columns
-        array = dfs[df][cols].values
-        if split:
-            split = self.calc_split(dfs, **split)
-            array = array[split]
-        if self.type == 'torch':
-            self.array = torch.tensor(array, dtype=self.dtype)
-        elif self.type == 'numpy':
-            self.array = array.astype(self.dtype)
-
-@register_dataset('bit')
+    def init_data(self, dfs, df, cols=None):
+        data = dfs[df]
+        if cols is not None: data = data[cols]
+        return data.values
+    
 class BitDataset(Dataset):
-    def __init__(self, logger, name, dfs, 
-            path, size, dtype='long'):
-        super().__init__(logger, name, dfs)
+    def __init__(self, name, dfs, path, size, dtype='long'):
+        super().__init__(name)
         self.size = size
         self.packed_array = np.load(path)
         assert len(self.packed_array[0]) == math.ceil(size/8)
         self.dtype = torch_name2dtype[dtype]
-    def make_batch(self, batch, idx, device):
-        packed_data = self.packed_array[idx]
-        data = np.unpackbits(packed_data, axis=1)
-        batch[self.name] = torch.tensor(data, dtype=self.dtype, device=device)
-        return batch
-        
+    def __getitem__(self, index):
+        packed_data = self.packed_array[index]
+        data = np.unpackbits(packed_data)
+        return torch.tensor(data, dtype=self.dtype)
+
     def __len__(self):
         return len(self.packed_array)
 
-@register_dataset('sparse_square')
 class SparseSquareDataset(Dataset):
-    def __init__(self, logger, name, dfs, 
-        padding_value, path_length,
-        path_index, path_value, len_name=None, dtype=None, split=None, symmetrize=False, **kwargs):
-        super().__init__(logger, name, dfs, **kwargs)
-        """
-        Parameters to write
-        -------------------
-        padding_value(int): Pad token.
-        path_length(str): Path to pickle or npy file or of list of length of each square.
-            File data shuld be list(int) or np.ndarray(int)[]
-        path_index(str): path to pickle file of list of 
-            File data should be list(np.ndarray[n_entry, 2])
-        path_value(str): Path to pickle file of list
-            File data should be list(np.ndarray[n_entry])
-        """
-        self.len_name = len_name or f"{self.name}_len"
-        if split:
-            raise NotImplementedError("Splitting for SparseSquareDataset is not defined.")
+    def __init__(self, name, dfs, 
+        padding_value: int, path_length: str, path_index: str, path_value: str, 
+        dtype=None, symmetrize=False, return_sparse=False):
+
+        super().__init__(name)
         ext = os.path.splitext(path_length)[1]
         if ext == '.npy':
-            lengths = np.load(path_length)
+            self.lengths = np.load(path_length)
         elif ext == '.pkl':
             with open(path_length, 'rb') as f:
-                lengths = np.array(pickle.load(f))
-            if lengths.dtype == np.object_:
-                lengths = lengths.astype(int)
+                self.lengths = np.array(pickle.load(f))
+            if self.lengths.dtype == np.object_:
+                self.lengths = self.lengths.astype(int)
         else:
             raise ValueError(f"Unsupported type of path_length: {path_length}")
-        self.lengths = torch.tensor(lengths, dtype=torch.long)
-        
-        with open(path_index, 'rb') as f:
-            self.indices = pickle.load(f)
-        with open(path_value, 'rb') as f:
-            self.values = pickle.load(f)
-        self.padding_value = padding_value
-        if dtype is not None:
-            self.dtype = torch_name2dtype[dtype]
-        else:
-            self.dtype = None
-        self.symmetrize = symmetrize
-    def make_batch(self, batch, idx, device):
-        batch_size = len(idx)
-        lengths = self.lengths[idx].to(device)
-        batch[self.len_name] = lengths
-        max_len = torch.max(lengths)
-        ibatches = []
-        indices = []
-        values = []
-        for i, idx in enumerate(idx):
-            index = torch.tensor(self.indices[idx], dtype=torch.int, device=device) # [n_edge, 2]
-            indices.append(index)
-            ibatches.append(torch.full((index.shape[0], ), fill_value=i, dtype=torch.int, device=device))
-            values.append(torch.tensor(self.values[idx], dtype=self.dtype, device=device))
-        ibatches = torch.cat(ibatches, dim=0)
-        indices = torch.cat(indices, dim=0).T # [2, n_edges]
-        indices = torch.cat([ibatches.unsqueeze(0), indices], dim=0)
-        values = torch.cat(values, dim=0)
-        data = torch.sparse_coo_tensor(indices, values, size=(batch_size, max_len, max_len)).to_dense()
-        if self.symmetrize:
-            data = data + data.transpose(-1, -2)
-        batch[self.name] = data
-
-    def __len__(self):
-        return len(self.lengths)
-
-# いずれSparse..Datasetにmerge予定
-@register_dataset('sparse_square2')
-class SparseSquareDataset2(Dataset):
-    def __init__(self, logger, name, dfs, 
-        padding_value, path_length,
-        path_index, path_value, len_name=None, dtype=None, split=None, symmetrize=False, return_sparse=False, **kwargs):
-        super().__init__(logger, name, dfs, **kwargs)
-        """
-        Parameters to write
-        -------------------
-        padding_value(int): Pad token.
-        path_length(str): Path to pickle or npy file or of list of length of each square.
-            File data shuld be list(int) or np.ndarray(int)[]
-        path_index(str): path to pickle file of list of 
-            File data should be list(np.ndarray[n_entry, 2])
-        path_value(str): Path to pickle file of list
-            File data should be list(np.ndarray[n_entry])
-        return_sparse(bool):
-            If True, return indices and values of matrix
-        """
-        self.len_name = len_name or f"{self.name}_len"
-        if split:
-            raise NotImplementedError("Splitting for SparseSquareDataset is not defined.")
-        ext = os.path.splitext(path_length)[1]
-        if ext == '.npy':
-            lengths = np.load(path_length)
-        elif ext == '.pkl':
-            with open(path_length, 'rb') as f:
-                lengths = np.array(pickle.load(f))
-            if lengths.dtype == np.object_:
-                lengths = lengths.astype(int)
-        else:
-            raise ValueError(f"Unsupported type of path_length: {path_length}")
-        self.lengths = torch.tensor(lengths, dtype=torch.long)
         
         with open(path_index, 'rb') as f:
             self.indices = pickle.load(f)
@@ -531,59 +161,188 @@ class SparseSquareDataset2(Dataset):
             self.dtype = None
         self.symmetrize = symmetrize
         self.return_sparse = return_sparse
-    def make_batch(self, batch, idx, device):
-        batch_size = len(idx)
-        lengths = self.lengths[idx].to(device)
-        batch[self.len_name] = lengths
-        max_len = torch.max(lengths)
-        ibatches = []
-        indices = []
-        values = []
-        if self.return_sparse:
-            rindices = []
-            rvalues = []
-        for i, idx in enumerate(idx):
-            index = torch.tensor(self.indices[idx], dtype=torch.long, device=device) # [n_edge, 2]
-            value = torch.tensor(self.values[idx], dtype=self.dtype, device=device)
-            indices.append(index)
-            ibatches.append(torch.full((index.shape[0], ), fill_value=i, dtype=torch.int, device=device))
-            values.append(value)
-            if self.return_sparse:
-                rindices.append(index) # [n_edge, 2]
-                rvalues.append(value)
-        ibatches = torch.cat(ibatches, dim=0)
-        indices = torch.cat(indices, dim=0).T # [2, n_edges]
-        indices = torch.cat([ibatches.unsqueeze(0), indices], dim=0)
-        values = torch.cat(values, dim=0)
-        data = torch.sparse_coo_tensor(indices, values, size=(batch_size, max_len, max_len)).to_dense()
+    
+    def __getitem__(self, index: int):
+        length = self.lengths[index]
+        idx = torch.tensor(self.indices[index], dtype=torch.long).T # [2, n_edge]
+        value = torch.tensor(self.values[index], dtype=self.dtype)
+        return length, idx, value # [], [2, n_edge], [n_edge]
+    
+    def collate(self, batch: dict, data: tuple[tuple], device: torch.device):
+        lengths, idxs, values = zip(*data)
+        batch_size = len(data)
+
+        lengths = torch.tensor(lengths, device=device)
+        batch[self.name+'_len'] = lengths
+        max_length = torch.max(lengths)
+
+        ibatches = torch.cat([ torch.full((1, idx.shape[1]), fill_value=i, dtype=torch.long)
+                for i, idx in enumerate(idxs)], dim=1).to(device)
+        idxs_b = torch.cat(idxs, dim=1).to(device)
+        idxs_b = torch.cat([ibatches, idxs_b], dim=0).to(device) # [3, n_edge]
+        values_b = torch.cat(values, dim=0).to(device)
+        data = torch.sparse_coo_tensor(idxs_b, values_b, 
+            size=(batch_size, max_length, max_length), device=device).to_dense()
         if self.symmetrize:
             data = data + data.transpose(-1, -2)
         batch[self.name] = data
+
         if self.return_sparse:
-            rindices0 = pad_sequence([rindex[:,0] for rindex in rindices],
-                batch_first=True, padding_value=0) # [B, n_edge]
-            rindices1 = pad_sequence([rindex[:,1] for rindex in rindices], 
-                batch_first=True, padding_value=1) # [B, n_edge]
-            rindices = torch.stack([rindices0, rindices1], dim=-1)
-            batch[self.name + '_indices'] = rindices
-            rvalues = pad_sequence(rvalues, batch_first=True, padding_value=0) # [B, n_edge]
-            batch[self.name + '_values'] = rvalues
+            idxs_r0 = pad_sequence([idx[0] for idx in idxs],
+                    batch_first=True, padding_value=0) # [B, n_edge]
+            idxs_r1 = pad_sequence([idx[1] for idx in idxs],
+                    batch_first=True, padding_value=1) # [B, n_edge] 240810なぜpadding_valueが違うのか？
+            idxs_r = torch.stack([idxs_r0, idxs_r1], dim=-1)
+            batch[self.name+'_indices'] = idxs_r
+            values_r = pad_sequence(values, batch_first=True, padding_value=0)
+            batch[self.name+'_values'] = values_r
 
-    def __len__(self):
-        return len(self.lengths)
+    def get_lengths(self):
+        return self.lengths
 
-@register_dataset('generate')
+
 class GenerateDataset(Dataset):
-    def __init__(self, logger, name, dfs, feature_size, data_size, **kwargs):
-        super().__init__(logger, name, dfs,**kwargs)
+    def __init__(self, name, dfs, feature_size, data_size, **kwargs):
+        super().__init__(name)
         self.feature_size = feature_size
         self.data_size = data_size
-    def make_batch(self, batch, idx, device):
-        batch[self.name] = torch.randn(len(idx), self.feature_size, device=device)
+
+    def __getitem__(self, index):
+        return torch.randn((self.feature_size,))
+    
     def __len__(self):
         return self.data_size
 
-from .datasets.patho import *
+dataset_type2class = {
+    'sequence': SequenceDataset,
+    'ndarray': NdarrayDataset,
+    'series': SeriesDataset,
+    'dataframe': DataFrameDataset,
+    'bit': BitDataset,
+    'sparse_square': SparseSquareDataset
+}
 
-def get_dataset(type, **kwargs) -> Dataset:
-    return dataset_type2class[type](**kwargs)
+def register_dataset(name):
+    def register_dataset_cls(cls):
+        assert issubclass(cls, Dataset)
+        dataset_type2class[name] = cls
+        return cls
+    return register_dataset_cls
+
+def get_dataset(type, name, dfs, **kwargs) -> Dataset:
+    return dataset_type2class[type](name=name, dfs=dfs, **kwargs,)
+
+class Datasets(Dataset):
+    def __init__(self, datasets: dict[str, dict], dfs: dict[str, dict] = {}):
+        dfs = {name: pd.read_csv(**df) for name, df in dfs}
+        self.datasets = \
+            {name: get_dataset(name=name, dfs=dfs, **dataset) for name, dataset in datasets.items()}
+    
+    def __getitem__(self, index):
+        return (dataset[index] for dataset in self.datasets.values())
+
+    def collate(self, datas: list):
+        batch = {}
+        for dataset, data in zip(self.datasets.values(), zip(*datas)):
+            dataset.collate(batch, data)
+        return batch
+    
+    def __len__(self):
+        for dataset in self.datasets.values():
+            try:
+                return len(dataset)
+            except NotImplementedError:
+                pass
+        return NotImplementedError
+
+class RandomSampler(torch.utils.data.RandomSampler):
+    def __init__(self, datasets, 
+            seed: int, **kwargs):
+            generator = torch.Generator()
+            generator.manual_seed(seed)
+            super().__init__(datasets, generator=generator, **kwargs)
+
+class NormalSampler(BatchSampler):
+    def __init__(self, datasets, 
+            seed: int,
+            batch_size: int,
+            drop_last: bool = False,
+            replacement: bool=False,
+            num_samples=None):
+        
+        sampler = RandomSampler(datasets, seed, replacement=replacement, 
+                num_samples=num_samples)
+        super().__init__(sampler, batch_size, drop_last)
+
+class BucketSampler(Sampler):
+    def __init__(self, datasets: Datasets, 
+            seed: int, 
+            buckets: dict[str, list[float]],
+            batch_sizes: list):
+        self.batch_sizes = batch_sizes
+        self.rstate = np.random.default_rng(seed)
+        d2b = None
+        for dset_name, bins in buckets.items():
+            lengths = datasets.datasets[dset_name].get_lengths()
+            d2b0 = np.digitize(lengths, bins) - 1
+            if d2b is None: 
+                d2b = d2b0
+            else:
+                d2b = np.maximum(d2b, d2b0)
+        self.d2b = d2b
+
+    def __iter__(self):
+        idxs = []
+        for ib, batch_size in enumerate(self.batch_sizes):
+            bucket_idxs = np.where(self.d2b == ib)[0]
+            if len(bucket_idxs) == 0: continue
+            self.rstate.shuffle(bucket_idxs)
+            idxs += [bucket_idxs[i:i+batch_size] for i in range(0, len(bucket_idxs), batch_size)]
+        self.rstate.shuffle(idxs)
+        return iter(idxs)
+    
+    def __len__(self):
+        l = 0
+        for ib, batch_size in enumerate(self.batch_sizes):
+            bucket_idxs = np.where(self.d2b == ib)[0]
+            l += math.ceil(len(bucket_idxs)/batch_size)
+        return l
+
+class ChunkSampler(Sampler):
+    def __init__(self, datasets: Datasets,
+            seed: int, length_data: str, batch_size: int, last: str, shuffle_chunk: bool):
+        self.length_data = datasets.datasets[length_data]
+        self.batch_size = batch_size
+        assert last in [None, 'drop', 'refill']
+        self.last = last
+        self.shuffle_chunk = shuffle_chunk
+        self.rstate = np.random.default_rng(seed)
+
+
+    def __iter__(self):
+        chunk_idxs = np.arange(len(self.length_data))
+        if self.shuffle_chunk:
+            self.rstate.shuffle(chunk_idxs)
+        for cidx in chunk_idxs:
+            data_idxs = np.arange(self.length_data[cidx])
+            self.rstate.shuffle(data_idxs)
+            if self.last == 'drop':
+                data_idxs = data_idxs[:-len(data_idxs)%self.batch_size]
+            elif self.last == 'refill':
+                data_idxs = np.concatenate(data_idxs, data_idxs[])
+
+batch_sampler_type2class = {
+    'normal': NormalSampler, 
+    'bucket': BucketSampler,
+}
+def get_batch_sampler(type, datasets, **kwargs):
+    return batch_sampler_type2class[type](datasets=datasets, **kwargs)
+
+class DataLoader(torch.utils.data.DataLoader):
+    def __init__(self, datasets, dfs, batch_sampler, **kwargs):
+        datasets = Datasets(datasets, dfs)
+        batch_sampler = get_batch_sampler(datasets=datasets, **batch_sampler)
+
+        super().__init__(dataset=datasets, batch_sampler=batch_sampler, 
+                collate_fn=datasets.collate, **kwargs)
+

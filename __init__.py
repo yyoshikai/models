@@ -24,7 +24,7 @@ def register_module(cls):
     return cls
 
 from .models import *
-from .dataset import get_dataloader
+from .dataset_old import get_dataloader
 from .process import get_process, get_processes
 
 import torch.nn as nn
@@ -55,7 +55,7 @@ for cls in [BarlowTwinsCriterion, MolCLIPCriterion]:
 
 
 # dataset
-from .dataset import dataset_type2class
+from .dataset_old import dataset_type2class
 from .datasets.grover import GroverDataset, Grover2Dataset
 dataset_type2class['grover'] = GroverDataset
 dataset_type2class['grover2'] = Grover2Dataset
