@@ -34,7 +34,6 @@ from models.dataset import get_dataloader
 from models.accumulator import get_accumulator, NumpyAccumulator
 from models.metric import get_metric
 from models.process import get_processes
-# from models.hooks import AlarmHook, hook_type2class, get_hook
 from models import Model
 from models.optimizer import ModelOptimizer
 from models.utils import set_env
