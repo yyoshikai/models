@@ -121,8 +121,11 @@ class BitDataset(Dataset):
 
 class SparseSquareDataset(Dataset):
     def __init__(self, name, dfs, 
-        padding_value: int, path_length: str, path_index: str, path_value: str, len_name=None, 
-        dtype=None, symmetrize=False, return_sparse=False):
+        padding_value: int, path_length: str, path_index: str, path_value: str, 
+        dtype=None, symmetrize=True, return_sparse=False):
+        """
+        symmetrizeのデフォルトをTrueに変更(最悪間違えても大丈夫)
+        """
         super().__init__(name)
         ext = os.path.splitext(path_length)[1]
         if ext == '.npy':
@@ -147,6 +150,69 @@ class SparseSquareDataset(Dataset):
             self.dtype = None
         self.symmetrize = symmetrize
         self.return_sparse = return_sparse
+    
+    def __getitem__(self, index: int):
+        idx = torch.tensor(self.indices[index], dtype=torch.long).T # [2, n_edge]
+        value = torch.tensor(self.values[index], dtype=self.dtype)
+        return index, idx, value
+    def collate(self, batch: dict, data: tuple[tuple], device: torch.device):
+        indices, idxs, values = zip(*data)
+        ibatches = torch.cat([ torch.full((1, idx.shape[1]), fill_value=i, dtype=torch.long)
+                for i, idx in enumerate(idxs)], dim=1).to(device)
+        idxs = torch.cat(idxs, dim=1).to(device)
+        idxs = torch.cat([ibatches, idxs], dim=0).to(device) # [3, n_edge]
+        values = torch.cat(values, dim=0).to(device)
+        
+
+    def make_batch(self):
+        batch_size = len(idx)
+        lengths = self.lengths[idx].to(device)
+        batch[self.len_name] = lengths
+        max_len = torch.max(lengths)
+        ibatches = []
+        indices = []
+        values = []
+        if self.return_sparse:
+            rindices = []
+            rvalues = []
+        for i, idx in enumerate(idx):
+            index = torch.tensor(self.indices[idx], dtype=torch.long, device=device) # [n_edge, 2]
+            value = torch.tensor(self.values[idx], dtype=self.dtype, device=device)
+            indices.append(index)
+            ibatches.append(torch.full((index.shape[0], ), fill_value=i, dtype=torch.int, device=device))
+            values.append(value)
+            if self.return_sparse:
+                rindices.append(index) # [n_edge, 2]
+                rvalues.append(value)
+        ibatches = torch.cat(ibatches, dim=0)
+        indices = torch.cat(indices, dim=0).T # [2, n_edges]
+        indices = torch.cat([ibatches.unsqueeze(0), indices], dim=0)
+        values = torch.cat(values, dim=0)
+        data = torch.sparse_coo_tensor(indices, values, size=(batch_size, max_len, max_len)).to_dense()
+        if self.symmetrize:
+            data = data + data.transpose(-1, -2)
+        batch[self.name] = data
+        if self.return_sparse:
+            rindices0 = pad_sequence([rindex[:,0] for rindex in rindices],
+                batch_first=True, padding_value=0) # [B, n_edge]
+            rindices1 = pad_sequence([rindex[:,1] for rindex in rindices], 
+                batch_first=True, padding_value=1) # [B, n_edge]
+            rindices = torch.stack([rindices0, rindices1], dim=-1)
+            batch[self.name + '_indices'] = rindices
+            rvalues = pad_sequence(rvalues, batch_first=True, padding_value=0) # [B, n_edge]
+            batch[self.name + '_values'] = rvalues
+    
+    
+    
+        pass
+    
+    
+    def collate(self, batch: dict, data: tuple[int], device: torch.device):
+        pass
+
+
+
+
 
 
     
