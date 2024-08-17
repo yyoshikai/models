@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from ..dataset import Dataset, register_dataset
+from ..data import Dataset, register_dataset
 try:
     from openslide import OpenSlide
 except Exception:

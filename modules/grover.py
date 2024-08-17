@@ -10,7 +10,7 @@ from torch import nn as nn
 from torch.nn import LayerNorm, functional as F
 from torch.nn.utils.rnn import pad_sequence
 
-from ..datasets.grover import ATOM_FDIM, BOND_FDIM
+from ..data.grover import ATOM_FDIM, BOND_FDIM
 from .. import register_module
 
 def get_activation_function(activation: str):

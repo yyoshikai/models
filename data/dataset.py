@@ -80,31 +80,37 @@ class ArrayDataset(Dataset):
             self.data = torch.tensor(data, dtype=torch_name2dtype[dtype])
         else:
             raise ValueError
-        if getitem_subs: # こういう実装してみたが, 分かりやすいか？
-            self.getitemer = lambda index: self.data[index]
-            if isinstance(self.data, np.ndarray):
-                self.collator = lambda data: np.stack(data, axis=0)
-            else:
-                self.collator = lambda data: torch.stack(data, dim=0)
-        else:
-            self.getitemer = lambda index: index
-            self.collator = lambda data: self.data[data]
+        self.getitem_subs = getitem_subs
 
     def init_data(self, dfs, **kwargs):
         raise NotImplementedError
 
     def __getitem__(self, index):
-        return self.getitemer(index)
-    
-    def collate(self, batch: dict, data: tuple[int], device: torch.device):
+        if self.getitem_subs:
+            return self.data[index]
+        else:
+            return index
+
+    def collate(self, batch: dict, data: tuple[int|np.ndarray|torch.Tensor], 
+                device: torch.device):
         data = self.collator(data)
+        if self.getitem_subs:
+            if isinstance(self.data, np.ndarray):
+                data = np.stack(data, axis=0)
+            else:
+                data = torch.stack(data, dim=0)
+        else:
+            data = self.data[data]
         if isinstance(data, torch.Tensor):
             data = data.to(device)
         batch[self.name] = data
         
 class NdarrayDataset(ArrayDataset):
     def init_data(self, dfs, path, cols=None):
-        data = np.load(path)
+        if isinstance(path, np.ndarray):
+            data = path
+        else:
+            data = np.load(path)
         if cols is not None: data = data[:, cols]
         return data
 
@@ -233,11 +239,14 @@ def get_dataset(type, name, dfs, **kwargs) -> Dataset:
     return dataset_type2class[type](name=name, dfs=dfs, **kwargs,)
 
 class Datasets(Dataset):
-    def __init__(self, datasets: dict[str, dict], dfs: dict[str, dict] = {}):
+    def __init__(self, datasets: dict[str, dict], dfs: dict[str, dict] = {}, index=True):
         dfs = {name: pd.read_csv(**df) for name, df in dfs}
         self.datasets = \
             {name: get_dataset(name=name, dfs=dfs, **dataset) for name, dataset in datasets.items()}
-    
+        if index:
+            self.datasets['index'] = NdarrayDataset('index', dfs, dtype='int', atype='numpy', 
+                    path=np.arange(len(self), int))
+
     def __getitem__(self, index):
         return (dataset[index] for dataset in self.datasets.values())
 

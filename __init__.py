@@ -56,7 +56,7 @@ for cls in [BarlowTwinsCriterion, MolCLIPCriterion]:
 
 # dataset
 from .dataset_old import dataset_type2class
-from .datasets.grover import GroverDataset, Grover2Dataset
+from .data.grover import GroverDataset, Grover2Dataset
 dataset_type2class['grover'] = GroverDataset
 dataset_type2class['grover2'] = Grover2Dataset
 

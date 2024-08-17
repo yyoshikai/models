@@ -106,8 +106,10 @@ def main(
     logger.info(f"Model size(bit): {bit_size}")
 
     ## Process
-    process = {key: get_process(**p) for key, p in process.items()}
-    train_loop = 
+    processes = get_processes(processes)
+    processes['train']
+    
+
 
 if __name__ == '__main__':
     config_ = load_config2("", default_configs=['base.yaml'])

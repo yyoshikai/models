@@ -10,7 +10,7 @@ except ImportError:
     logger.info("OpenSlide is not installed.")
     OpenSlide = None
 
-from ..dataset import Dataset, register_dataset, get_dataset
+from ..data import Dataset, register_dataset, get_dataset
 
 @register_dataset('file_list')
 class FileListDataset(Dataset):
