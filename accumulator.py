@@ -5,6 +5,8 @@ import torch
 
 from .utils import EMPTY
 
+
+
 class NumpyAccumulator:
     def __init__(self, input, batch_dim=0):
         """
