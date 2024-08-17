@@ -69,6 +69,7 @@ def main(args,
         logging,
         init_weight={},
         env={},
+        gpuid: int=0,
         abortion: dict={},
         minus_abortion={},
         notice_alarm: dict={}, 
@@ -84,7 +85,8 @@ def main(args,
 
     # environment
     dictConfig(logging)
-    device = set_env(**env)
+    set_env(**env)
+    device = get_device(gpuid)
     logger.warning(f"device: {device}")
     
     # prepare data
@@ -115,10 +117,6 @@ def main(args,
         for oname, oconfig in optimizers.items()
     }
     
-    # Prepare process
-    train_processes = get_processes(trconfig.train_loop)
-    val_processes = get_processes(trconfig.val_loop, 
-            trconfig.train_loop if trconfig.val_loop_add_train else None)
 
     # Prepare abortion
     abort_time = abortion.pop('time', float('inf'))

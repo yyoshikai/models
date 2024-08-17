@@ -326,10 +326,17 @@ class ChunkSampler(Sampler):
         for cidx in chunk_idxs:
             data_idxs = np.arange(self.length_data[cidx])
             self.rstate.shuffle(data_idxs)
+
+            last_size = len(data_idxs)%self.batch_size
             if self.last == 'drop':
-                data_idxs = data_idxs[:-len(data_idxs)%self.batch_size]
+                data_idxs = data_idxs[:-last_size]
             elif self.last == 'refill':
-                data_idxs = np.concatenate(data_idxs, data_idxs[])
+                data_idxs = np.concatenate([data_idxs, 
+                    data_idxs[:self.batch_size-last_size]])
+            
+            for s in range(0, len(data_idxs), self.batch_size):
+                yield data_idxs[s:s+self.batch_size]
+                
 
 batch_sampler_type2class = {
     'normal': NormalSampler, 

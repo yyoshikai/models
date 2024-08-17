@@ -1,6 +1,6 @@
 import sys, os
 import math
-import logging
+from logging import Logger, getLogger
 from collections import OrderedDict
 from inspect import signature
 import fnmatch
@@ -149,42 +149,40 @@ def get_module(logger, type, **kwargs):
     return cls(**uargs)
 
 class Model(nn.ModuleDict):
-    def __init__(self, logger: logging.Logger, modules: dict, use_modules:list=None,
+    logger = getLogger(f"{__module__}.{__qualname__}")
+
+    def __init__(self, modules: dict, use_modules:list=None,
             omit_modules: list=None, seed=None, init: dict = {}):
         if seed is not None:
             torch.manual_seed(seed)
             torch.cuda.manual_seed(seed)
         if (use_modules is not None) and (omit_modules is not None):
             raise ValueError(f"Please specify either use_modules or omit_modules")
-        logger.debug("Building started.")
+        self.logger.debug("Building started.")
         mods = OrderedDict()
         for mod_name, mod_config in modules.items():
             if (use_modules is not None and mod_name not in use_modules) or \
                 (omit_modules is not None and mod_name in omit_modules):
                 continue
-            logger.debug(f"Building {mod_name}...")
-            mods[mod_name] = get_module(logger=logger, **mod_config)
-        logger.debug("Building finished.")
+            self.logger.debug(f"Building {mod_name}...")
+            mods[mod_name] = get_module(logger=self.logger, **mod_config)
+        self.logger.debug("Building finished.")
         super().__init__(modules=mods)
-        self.logger = logger
-
         # initialization
-        logger.debug("Initialization started.")
+        self.logger.debug("Initialization started.")
         for name, param in self.state_dict().items():
             for pattern, config in init.items():
                 if (pattern in name) or fnmatch.fnmatchcase(name, pattern):
-                    logger.debug(f"{name}: {config}")
+                    self.logger.debug(f"{name}: {config}")
                     init_config2func(config)(param)
-        logger.debug("Initialization finished.")
+        self.logger.debug("Initialization finished.")
 
-    def forward(self, batch, processes, logger: logging.Logger=None):
-        show = logger.debug if logger is not None \
-            else partial(print, flush=True)
+    def forward(self, batch, processes):
         if isinstance(processes, list):
             for i, process in enumerate(processes):
                 if PRINT_PROCESS:
-                    show(f"-----process {i}-----")
-                    show(process)
+                    self.logger.debug(f"-----process {i}-----")
+                    self.logger.debug(process)
                     os.makedirs(f"./process_batch/{i}", exist_ok=True)
                     for key, value in batch.items():
                         if isinstance(value, (torch.Tensor, np.ndarray)):
@@ -196,7 +194,7 @@ class Model(nn.ModuleDict):
                             torch.save(value,f'./process_batch/{i}/{key}.pt')
                         else:
                             msg = f"  {key}: {type(value).__name__}"
-                        show(msg)
+                        self.logger.debug(msg)
                 process(self, batch)
             return batch
         else: # callable
