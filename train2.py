@@ -30,7 +30,7 @@ from models.metric import get_metric
 from models.process2 import get_processes
 from models import Model
 from models.optimizer import ModelOptimizer
-from models.utils import set_env, get_device
+from models.utils import set_deterministic, get_device
 from models.alarm import Alarm
 
 class RState(Singleton):
@@ -60,26 +60,33 @@ class RState(Singleton):
 @noticeerror(from_=f"train.py in {os.getcwd()}", notice_end=False)
 def main(
         result_dir: dict,
-        model: dict,
         log: dict,
+        model: dict,
         data: dict,
         process: dict,
 
+        version: float=0.0,
+        
         gpuid: int=0,
-        env: dict={},
+        deterct_anomaly: bool=False,
+        deterministic: bool=False,
         init_weight: dict={},
         model_seed=None,
+        
+        config_: dict={},
         args=None,
     ):
 
     # Environment    
+    assert version >= 1.0
     logger = getLogger(__name__)
     dictConfig(log)
     result_dir = make_result_dir(**result_dir)
     with open(f"{result_dir}/config.yaml", mode='w') as f:
-        yaml.dump(config.to_dict(), f, sort_keys=False)
+        yaml.dump(config_, f, sort_keys=False)
     logger.warning(f"options: {' '.join(args)}")
-    set_env(**env)
+    torch.autograd.set_detect_anomaly = deterct_anomaly
+    set_deterministic(deterministic)
     device = get_device(gpuid)
     logger.warning(f"device: {device}")
     rstate = RState()
@@ -98,7 +105,7 @@ def main(
     logger.info(f"# of params: {n_param}")
     logger.info(f"Model size(bit): {bit_size}")
 
-    #＃ Process
+    ## Process
     process = {key: get_process(**p) for key, p in process.items()}
     train_loop = 
 
@@ -106,6 +113,6 @@ if __name__ == '__main__':
     config_ = load_config2("", default_configs=['base.yaml'])
     ## replacement of config: add more when needed
     config_ = subs_vars(config_, {"$TIMESTAMP": timestamp()})
-    main(args=sys.argv, **config_)
+    main(args=sys.argv, config_=config_.to_dict(), **config_)
 
 
