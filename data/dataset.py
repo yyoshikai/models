@@ -89,17 +89,15 @@ class ArrayDataset(Dataset):
             return self.data[index]
         else:
             return index
+    def __getitems__(self, indices: list):
+        return tuple(self.data[indices])
 
-    def collate(self, batch: dict, data: tuple[int|np.ndarray|torch.Tensor], 
+    def collate(self, batch: dict, data: tuple[np.ndarray|torch.Tensor], 
                 device: torch.device):
-        data = self.collator(data)
-        if self.getitem_subs:
-            if isinstance(self.data, np.ndarray):
-                data = np.stack(data, axis=0)
-            else:
-                data = torch.stack(data, dim=0)
+        if isinstance(self.data[0], np.ndarray):
+            data = np.stack(data, axis=0)
         else:
-            data = self.data[data]
+            data = torch.stack(data, dim=0)
         if isinstance(data, torch.Tensor):
             data = data.to(device)
         batch[self.name] = data
@@ -214,6 +212,9 @@ class GenerateDataset(Dataset):
 
     def __getitem__(self, index):
         return torch.randn((self.feature_size,))
+    
+    def __getitems__(self, indices):
+        return list(torch.randn((len(indices), self.feature_size)))
     
     def __len__(self):
         return self.data_size
