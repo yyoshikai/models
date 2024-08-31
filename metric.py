@@ -14,8 +14,6 @@ class Metric:
         self.name = name
     def init(self):
         raise NotImplementedError
-    def add(self, batch):
-        raise NotImplementedError("Use Metric.__call__ instead.")
     def calc(self, scores: dict):
         raise NotImplementedError
     def __call__(self, batch):
@@ -88,7 +86,7 @@ class BinaryMetric(Metric):
                 scores[self.name] = np.mean(scores0)
             else:
                 for i_task, task_name in zip(range(target.shape[1]), self.task_names):
-                    scores[f"{task_name}_{self.name}"] = \
+                    scores[f"{self.name}_{task_name}"] = \
                         self.calc_score(y_true=target[:,i_task], y_score=input[:, i_task])
         else:
             scores[self.name] = self.calc_score(y_true=target, y_score=input)

@@ -1,4 +1,5 @@
 import itertools
+import pickle
 import numpy as np
 import torch
 
@@ -24,22 +25,35 @@ def agg(values: list, batch_dim: int):
     else: raise ValueError
     return values
 
+def is_concatable(acc: list, batch_dim: int):
+    is_concatable = True
+    shape = None
+    for acc0 in acc:
+        shape0 = list(acc0.shape)
+        shape0.pop(batch_dim)
+        if shape is None: 
+            shape = shape0
+        else:
+            if shape != shape0:
+                is_concatable = False
+                break
+    return is_concatable
+
 class Accumulator:
     def __init__(self, 
-            usecols: list=None, 
+            usecols: list=[], 
             batch_dim: dict[str,int]={}, 
             keep_gpu: bool=False):
         self.usecols = usecols
-        self.accs = None
         self.batch_dim: dict = batch_dim
         self.keep_gpu = keep_gpu
 
-    def __call__(self, batch: dict):
-        if self.accs is None:
-            self.accs = { key: [] for key in 
-                    (self.usecols if self.usecols is not None else batch.keys())}
+    def init(self):
+        self.accs = {col: [] for col in self.usecols}
 
-        for key in self.accs:
+    def __call__(self, batch: dict):
+
+        for key in self.usecols:
             value = batch[key]
             if isinstance(value, torch.Tensor) and not self.keep_gpu:
                 value = value.to('cpu')
@@ -67,13 +81,47 @@ class Accumulator:
                 acc = list(itertools.chain.from_iterable(acc))
                 acc = [acc[i] for i in index]
             elif isinstance(acc[0], np.ndarray):
-                acc = np.concatenate(acc)[(slice(None),)*batch_dim+(index,)]
+                if is_concatable(acc):
+                    acc = np.concatenate(acc)[(slice(None),)*batch_dim+(index,)]
+                else:
+                    transpose = list(range(acc[0].ndim))
+                    transpose.pop(batch_dim)
+                    transpose.insert(0, batch_dim)
+                    acc_list = []
+                    for acc0 in acc:
+                        acc_list += list(acc0.transpose(transpose))
+                    acc = acc_list
             elif isinstance(acc[0], torch.Tensor):
-                acc = torch.cat(acc)[(slice(None),)*batch_dim+(index,)]
+                if is_concatable(acc):
+                    acc = torch.cat(acc)[(slice(None),)*batch_dim+(index,)]
+                else:
+                    transpose = list(range(acc[0].ndim))
+                    transpose.pop(batch_dim)
+                    transpose.insert(0, batch_dim)
+                    acc_list = []
+                    for acc0 in acc:
+                        acc_list += list(acc0.permute(transpose))
+                    acc = acc_list
             else:
                 raise ValueError
             agg_batch[key] = acc
+        
         return agg_batch
+
+    def save_agg(self, save_dir, index=None):
+        agg_batch = self.agg(index)
+
+        for key, value in agg_batch.items():
+            if isinstance(value, list):
+                with open(f"{save_dir}/{key}.pkl", 'wb') as f:
+                    pickle.dump(value, f)
+            elif isinstance(value, np.ndarray):
+                np.save(f"{save_dir}/{key}.npy", value)
+            elif isinstance(value, torch.Tensor):
+                torch.save(value, f"{save_dir}/{key}.pt")
+
+
+
 
 
 

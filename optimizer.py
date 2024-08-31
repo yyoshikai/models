@@ -183,12 +183,9 @@ class ModelOptimizer:
         else:
             self.scheduler = get_scheduler(optimizer=self.optimizer,dl_train=dl_train,
             n_epoch=n_epoch, opt_freq=opt_freq, **scheduler)
-        self.loss_names = loss_names
+        
         self.opt_freq = opt_freq
-        self.normalize = normalize
-        self.normalize_item = normalize_item
-        self.clip_grad_norm = clip_grad_norm
-        self.clip_grad_value = clip_grad_value
+
         if init_weight is not None:
             self.optimizer.load_state_dict(torch.load(init_weight))
         else:
@@ -198,22 +195,8 @@ class ModelOptimizer:
         self.filename = filename
 
     def step(self, batch):
-        
-        loss = sum(batch[lname] for lname in self.loss_names)
-        if self.normalize:
-            loss = loss / loss.detach()
-        if self.normalize_item:
-            loss = loss / batch[self.normalize_item]
-        batch[self.name] = loss
-        loss.backward()
 
         if (batch['step']+1) % self.opt_freq == 0: # これで合っている?
-            if self.clip_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(self.params, 
-                    max_norm=self.clip_grad_norm, error_if_nonfinite=True)
-            if self.clip_grad_value is not None:
-                torch.nn.utils.clip_grad_value_(self.params,
-                    clip_value=self.clip_grad_value)
             self.optimizer.step()
             if self.scheduler is not None:
                 self.scheduler.step()
@@ -223,12 +206,8 @@ class ModelOptimizer:
 # 最初のepochは0, schedulerが1度stepされるごとに1追加される。
 # batch数ではなく, optimizerがstepされた回数をベースにカウントされる。
 class PlotLR(lr_scheduler._LRScheduler):
-    need_train_info = True
-    def __init__(self, optimizer, dl_train, n_epoch, opt_freq,
-            points, unit='step', last_epoch=-1):
-        if unit == 'train': factor = dl_train.get_len(force=True) / opt_freq *n_epoch
-        elif unit == 'epoch': factor = dl_train.get_len(force=True) / opt_freq
-        else: factor = 1.0
+    def __init__(self, optimizer, points, last_epoch=-1):
+        factor = 1.0
         
         assert all([len(p) == 2 for p in points])
         self.xs = np.array([p[0] for p in points])
@@ -260,15 +239,11 @@ scheduler_type2class = {
     'plot': PlotLR
 }
 
-def get_scheduler(optimizer, type, dl_train, n_epoch, opt_freq, 
+def get_scheduler(optimizer, type, dl_train, opt_freq, 
         last_epoch=-1, **kwargs):
     if type in scheduler_type2class:
         sclass = scheduler_type2class[type]
-        if getattr(sclass, 'need_train_info', False):
-            return sclass(optimizer=optimizer, dl_train=dl_train, n_epoch=n_epoch,
-                opt_freq=opt_freq, **kwargs)
-        else:
-            return sclass(optimizer=optimizer, **kwargs)
+        return sclass(optimizer=optimizer, **kwargs)
     else:
         if type == 'warmup':
             warmup_step = kwargs.pop('warmup')

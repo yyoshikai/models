@@ -24,14 +24,15 @@ from tools.tools import Singleton
 
 from tools.args import load_config2, subs_vars
 from tools.torch import get_params
-from models.dataset import DataLoader
+from models.data import DataLoader
 from models.accumulator import get_accumulator, NumpyAccumulator
 from models.metric import get_metric
 from models.process2 import get_processes
 from models import Model
+from models.validator import Validator
 from models.optimizer import ModelOptimizer
 from models.utils import set_deterministic, get_device
-from models.alarm import Alarm
+from models.alarm import get_alarm
 
 class RState(Singleton):
     def __init__(self, seed: int=None):
@@ -62,8 +63,15 @@ def main(
         result_dir: dict,
         log: dict,
         model: dict,
+        optimizers: dict[dict],
         data: dict,
         process: dict,
+        losses: dict[str, float],
+        val: dict,
+
+        abort_alarm: dict,
+        val_alarm: dict,
+        save_alarm: dict,
 
         version: float=0.0,
         
@@ -72,7 +80,6 @@ def main(
         deterministic: bool=False,
         init_weight: dict={},
         model_seed=None,
-        
         config_: dict={},
         args=None,
     ):
@@ -96,6 +103,7 @@ def main(
 
     # Model
     rstate.init_seed(model_seed)
+    ## Model
     model = Model(**model)
     model.load(**init_weight)
     model.to(device)
@@ -104,12 +112,48 @@ def main(
     df_param.to_csv(f"{result_dir}/parameters.tsv", sep='\t', index=False)
     logger.info(f"# of params: {n_param}")
     logger.info(f"Model size(bit): {bit_size}")
-
     ## Process
-    processes = get_processes(processes)
-    processes['train']
+    processes = get_processes(process)
+    ## Optimizer
+    optimizers = [ ModelOptimizer(name=oname, model=model, dl_train=dl, **oconfig)
+        for oname, oconfig in optimizers]
     
+    # Validator
+    scoress = []
+    validator = Validator(**val)
 
+    # Alarm
+    abort_alarm = get_alarm(**abort_alarm)
+    val_alarm = get_alarm(**val_alarm)
+    save_alarm = get_alarm(**val_alarm)
+
+    # Training
+    step, epoch = 0, 0
+    while True:
+        for batch in dl:
+            batch['step'] = step
+            batch['epoch'] = epoch
+
+            ## Evaluation
+            reason = val_alarm(batch)
+            if reason:
+                scores, _ = validator.evaluate(model, batch, f"{result_dir}/val/{batch[reason]}")
+                                
+            ## Save
+            reason = save_alarm(batch)
+            if reason:
+                model.save_state_dict(f"{result_dir}/models/{batch[reason]}")
+            ## End
+            if abort_alarm(batch):
+                break
+            ## Training
+            batch = model(batch, processes['train'])
+            loss = sum(batch[l]*f for l, f in losses.items())
+            loss.backward()
+            for optimizer in optimizers:
+                optimizer.step()
+            step += 1
+        epoch += 1
 
 if __name__ == '__main__':
     config_ = load_config2("", default_configs=['base.yaml'])

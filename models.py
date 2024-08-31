@@ -38,7 +38,6 @@ init_type2func = {
     'none': lambda input: None,
 }
 
-
 def init_config2func(type='none', factor=None, **kwargs):
     """
     Parameters
@@ -177,29 +176,9 @@ class Model(nn.ModuleDict):
                     init_config2func(config)(param)
         self.logger.debug("Initialization finished.")
 
-    def forward(self, batch, processes):
-        if isinstance(processes, list):
-            for i, process in enumerate(processes):
-                if PRINT_PROCESS:
-                    self.logger.debug(f"-----process {i}-----")
-                    self.logger.debug(process)
-                    os.makedirs(f"./process_batch/{i}", exist_ok=True)
-                    for key, value in batch.items():
-                        if isinstance(value, (torch.Tensor, np.ndarray)):
-                            msg = f"  {key}: {list(value.shape)}[{value.ravel()[0]}]"
-                            if isinstance(value, torch.Tensor):
-                                msg += f"[{torch.sum(torch.isnan(value)).item()}/{value.numel()}]"
-                            else:
-                                msg += f"[{np.sum(np.isnan(value))}/{value.size}]"
-                            torch.save(value,f'./process_batch/{i}/{key}.pt')
-                        else:
-                            msg = f"  {key}: {type(value).__name__}"
-                        self.logger.debug(msg)
-                process(self, batch)
-            return batch
-        else: # callable
-            processes(self, batch)
-            return batch
+    def forward(self, batch, process):
+        process(self, batch)
+        return batch
     def load(self, path=None, replace={}, strict=True):
         if path is None: return
         if os.path.isfile(path):

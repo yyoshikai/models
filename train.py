@@ -60,8 +60,6 @@ def set_rstate(config):
     if 'cuda' in config:
         torch.cuda.set_rng_state_all(torch.load(config.cuda))
 
-
-
 @noticeerror(from_=f"train.py in {os.getcwd()}", notice_end=False)
 def main(args, 
         result_dir, 
