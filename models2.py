@@ -148,6 +148,7 @@ def function_config2func(config):
     if isinstance(config, str):
         return function_name2func[config]
     else:
+        config = config.copy()
         return partial(function_name2func[config.pop('type')], **config)
 
 # Modules
