@@ -1,3 +1,4 @@
+
 # mpiではないが, train.pyをiterationする。
 import sys, os
 import yaml

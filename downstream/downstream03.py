@@ -105,7 +105,7 @@ model_type2class = {
 def main(config, type, model, params, objective, n_trial,
     dfs, data, result_dir, 
     path_best_params=None, notice=False,
-    log_file='debug', log_stream='info', log_optuna='warning', show_tqdm=True):
+    log_file='debug', log_stream='info', log_optuna='warning', show_tqdm=True, normalize_input=False):
     """
     valを指定せず, trainとtestのみでスコアを計算することも可能。
 
@@ -140,6 +140,7 @@ def main(config, type, model, params, objective, n_trial,
     log_stream(str): logging level to stdout.
     log_optuna(str): logging level of optuna.
     notice(bool)
+    normalize_input(bool)
     """
     # Make logger
     print(f"result_dir: {result_dir}")
@@ -183,6 +184,13 @@ def main(config, type, model, params, objective, n_trial,
         mask = get_dataset(logger=logger, name='mask_train', dfs=dfs, **dconfigs['train'].mask).array
         input_train = input_train[mask]
         target_train = target_train[mask]
+    if normalize_input:
+        input_train_mean = np.mean(input_train, axis=0)
+        input_train_std = np.std(input_train, axis=0)
+        input_col_mask = input_train_std != 0.0
+        input_train_mean = input_train_mean[input_col_mask]
+        input_train_std = input_train_std[input_col_mask]
+        input_train = (input_train[:, input_col_mask] - input_train_mean) / input_train_std
     
     ## validation data
     if 'val' in dconfigs:
@@ -192,6 +200,9 @@ def main(config, type, model, params, objective, n_trial,
             mask = get_dataset(logger=logger, name='mask_val', dfs=dfs, **dconfigs['val'].mask).array
             input_val = input_val[mask]
             target_val = target_val[mask]
+        if normalize_input:
+            input_val = (input_val[:, input_col_mask] - input_train_mean) / input_train_std
+
     else:
         input_val = target_val = None
     
@@ -269,6 +280,12 @@ def main(config, type, model, params, objective, n_trial,
         model.fit(input, target)
         with open(path_model, 'wb') as f:
             pickle.dump(model, f)
+        # save input mean/std at the same time as model was saved.
+        if normalize_input:
+            np.save(f"{result_dir}/input_train_mean.npy", input_train_mean)
+            np.save(f"{result_dir}/input_train_std.npy", input_train_std)
+            np.save(f"{result_dir}/input_col_mask.npy", input_col_mask)
+
         pred = model.predict(input)
         if np.all(target == target[0]):
             logger.info("Only one class exists in y_true in train & validation set.")
@@ -279,6 +296,8 @@ def main(config, type, model, params, objective, n_trial,
             df_train_scores.to_csv(path_train_score, sep='\t', header=False)
         if 'test' in dconfigs:
             input_test = get_dataset(logger=logger, name='target_test', dfs=dfs, **dconfigs['test'].input).array
+            if normalize_input:
+                input_test = (input_test[:, input_col_mask] - input_train_mean) / input_train_std
             pred_test = model.predict(input_test)
             if 'mask' in dconfigs['test']:
                 mask = get_dataset(logger=logger, name='mask_test', dfs=dfs, **dconfigs['test'].mask).array

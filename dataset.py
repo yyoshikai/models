@@ -64,14 +64,15 @@ class DataLoader:
         self.i_cur_idx = 0
 
         # dataset loading @dset
-        self._i_cur_dset = None
-        self._cur_dset = None
+        self._lazy_dset_idx = None
+        self._lazy_dset = None
 
         # load chekcpoint
         if checkpoint is not None:
+            print("Loading checkpoint...", flush=True)
             with open(f"{checkpoint}/config.yaml") as f:
                 config = Dict(yaml.load(f, yaml.Loader))
-            self._i_cur_dset = config.i_dset
+            self.i_cur_dset = config.i_dset
             self.i_cur_idx = config.i_current_idx
             self.epoch = config.epoch
             self.step = config.step
@@ -81,19 +82,18 @@ class DataLoader:
                 self.rstate.set_state(pickle.load(f))
 
     def dset(self, i):
-        if self._i_cur_dset != i:
-            del self._cur_dset
+        if self._lazy_dset_idx != i:
+            del self._lazy_dset
             gc.collect()
             dfs = {}
             for df_name, df_config in self.dset_configss[i].dfs.items():
                 self.logger.info(f"Loading {df_config.filepath_or_buffer} ...")
                 dfs[df_name] = pd.read_csv(**df_config)
-            self._cur_dset = {name: get_dataset(logger=self.logger, name=name, dfs=dfs, **dset_config) 
+            self._lazy_dset = {name: get_dataset(logger=self.logger, name=name, dfs=dfs, **dset_config) 
                 for name, dset_config in self.dset_configss[i].datasets.items()}
             del dfs
-            self._i_cur_dset = i
-            self.cur_idxs = None
-        return self._cur_dset
+            self._lazy_dset_idx = i
+        return self._lazy_dset
 
     def get_batch(self, batch=None):
         dset = self.dset(self.i_cur_dset)
@@ -126,7 +126,7 @@ class DataLoader:
     def checkpoint(self, path_checkpoint):
         os.makedirs(path_checkpoint)
         config = {
-            'i_dset': self._i_cur_dset, 
+            'i_dset': self.i_cur_dset, 
             'i_current_idx': self.i_cur_idx,
             'epoch': self.epoch,
             'step': self.step, 

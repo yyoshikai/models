@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from ..models2 import function_name2func, function_config2func, init_config2func, register_module
 
 
@@ -383,6 +384,45 @@ class TransformerEncoder(nn.Module):
         """
         return self.encoder(src=src, mask=None, src_key_padding_mask=key_padding_mask,
             need_weights=need_weights)
+
+@register_module
+class GRUEncoder(nn.Module):
+    def __init__(self, embedding_dim: int, num_embeddings: int, padding_idx: int,
+            emb_dropout: float,
+            d_models: list[int]):
+        """241224 
+        PositionalEmbedding+TransformerEncoderに相当
+        TransformerEncoderのlayernormも入っている。
+        """
+        super().__init__()
+        nlayer = len(d_models)
+        d_models = [embedding_dim]+d_models
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim, padding_idx)
+        self.padding_idx = padding_idx
+        self.emb_dropout = nn.Dropout(emb_dropout)
+        self.layers = nn.ModuleList([
+            nn.GRU(d_models[i], d_models[i+1]) for i in range(nlayer)
+        ])
+        self.lns = nn.ModuleList([
+            nn.LayerNorm(d_models[i+1]) for i in range(nlayer)
+        ])
+    
+    def forward(self, input: torch.Tensor):
+        """
+        Parameters
+        ----------
+        input: [B, L, D]
+        """
+        lengths = torch.sum(input != self.padding_idx, dim=1).cpu() # [L]
+        input = input.T.contiguous() # [L, B]
+        x = self.embedding(input) # [L, B, D]
+        x = pack_padded_sequence(x, lengths, enforce_sorted=False)
+        hs = []
+        for layer, ln in zip(self.layers, self.lns):
+            x, h = layer(x)
+            hs.append(ln(h.squeeze(0))) # [B, D]
+        hs = torch.cat(hs, dim=1)
+        return hs
 
 # decoders
 @register_module
@@ -790,7 +830,6 @@ class AttentionDecoder(LatentSequenceDecoder):
         latent = latent.view(length, batch_size*beam_size, d_model)
         return latent
 
-
 # LMベースのmemoryやlatentを必要としないDecoder
 @register_module
 class TransformerLMDecoder(LatentSequenceDecoder):
@@ -888,6 +927,48 @@ class TransformerLMDecoder(LatentSequenceDecoder):
         
         return cur_output.transpose(0, 1), state
 
+@register_module
+class GRUDecoder(LatentSequenceDecoder):
+    def __init__(self, embedding_dim: int, num_embeddings: int, padding_idx: int, 
+            emb_dropout: float, d_models: list[int]):
+        super().__init__()
+        nlayer = len(d_models)
+        self.d_models = d_models
+        d_models = [embedding_dim]+d_models
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim, padding_idx)
+        self.padding_idx = padding_idx
+        self.emb_dropout = nn.Dropout(emb_dropout)
+        self.layers = nn.ModuleList([
+            nn.GRU(d_models[i], d_models[i+1]) for i in range(nlayer)
+        ])
+
+    def forced(self, tgt: torch.Tensor, latent: torch.Tensor):
+        """
+        Parameters
+        --------
+        tgt: (long)[B, L]
+        latent: (float)[B, Dsum]
+
+        Returns
+        -------
+        output: (float)[B, L, D]
+        """
+        latents = torch.split(latent, self.d_models, dim=1)
+        lengths = torch.sum(tgt != self.padding_idx, dim=1).cpu() # [B]
+        tgt = tgt.T.contiguous() # [L, B]
+        x = self.embedding(tgt) # [L, B, D]
+        x = pack_padded_sequence(x, lengths, enforce_sorted=False)
+        for layer, latent in zip(self.layers, latents):
+            x, h = layer(x, latent.unsqueeze(0))
+        x, lengths = pad_packed_sequence(x, batch_first=True) # [B, L, D]
+        return x
+
+    def cell_forward(self, *args, **kwargs):
+        raise NotImplementedError
+    def prepare_cell_forward(self, *args, **kwargs):
+        raise NotImplementedError
+    def split_beam(self, *args, **kwargs):
+        raise NotImplementedError
 
 @register_module
 class CrossEntropyLoss(nn.CrossEntropyLoss):
