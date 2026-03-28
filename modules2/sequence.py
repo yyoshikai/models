@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from ..models2 import function_name2func, function_config2func, init_config2func, register_module
 
 
@@ -383,6 +384,45 @@ class TransformerEncoder(nn.Module):
         """
         return self.encoder(src=src, mask=None, src_key_padding_mask=key_padding_mask,
             need_weights=need_weights)
+
+@register_module
+class GRUEncoder(nn.Module):
+    def __init__(self, embedding_dim: int, num_embeddings: int, padding_idx: int,
+            emb_dropout: float,
+            d_models: list[int]):
+        """241224 
+        PositionalEmbedding+TransformerEncoderに相当
+        TransformerEncoderのlayernormも入っている。
+        """
+        super().__init__()
+        nlayer = len(d_models)
+        d_models = [embedding_dim]+d_models
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim, padding_idx)
+        self.padding_idx = padding_idx
+        self.emb_dropout = nn.Dropout(emb_dropout)
+        self.layers = nn.ModuleList([
+            nn.GRU(d_models[i], d_models[i+1]) for i in range(nlayer)
+        ])
+        self.lns = nn.ModuleList([
+            nn.LayerNorm(d_models[i+1]) for i in range(nlayer)
+        ])
+    
+    def forward(self, input: torch.Tensor):
+        """
+        Parameters
+        ----------
+        input: [B, L, D]
+        """
+        lengths = torch.sum(input != self.padding_idx, dim=1).cpu() # [L]
+        input = input.T.contiguous() # [L, B]
+        x = self.embedding(input) # [L, B, D]
+        x = pack_padded_sequence(x, lengths, enforce_sorted=False)
+        hs = []
+        for layer, ln in zip(self.layers, self.lns):
+            x, h = layer(x)
+            hs.append(ln(h.squeeze(0))) # [B, D]
+        hs = torch.cat(hs, dim=1)
+        return hs
 
 # decoders
 @register_module
@@ -790,7 +830,6 @@ class AttentionDecoder(LatentSequenceDecoder):
         latent = latent.view(length, batch_size*beam_size, d_model)
         return latent
 
-
 # LMベースのmemoryやlatentを必要としないDecoder
 @register_module
 class TransformerLMDecoder(LatentSequenceDecoder):
@@ -888,6 +927,143 @@ class TransformerLMDecoder(LatentSequenceDecoder):
         
         return cur_output.transpose(0, 1), state
 
+@register_module
+class GRUDecoder(LatentSequenceDecoder):
+    def __init__(self, embedding_dim: int, num_embeddings: int, padding_idx: int, 
+            emb_dropout: float, d_models: list[int]):
+        super().__init__()
+        nlayer = len(d_models)
+        self.d_models = d_models
+        d_models = [embedding_dim]+d_models
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim, padding_idx)
+        self.padding_idx = padding_idx
+        self.emb_dropout = nn.Dropout(emb_dropout)
+        self.layers = nn.ModuleList([
+            nn.GRU(d_models[i], d_models[i+1]) for i in range(nlayer)
+        ])
+
+    def greedy(self, latent: torch.Tensor, dec2proba: nn.Module,
+            init_token: int, end_token: int, max_len: int):
+        """
+        Parameters
+        ----------
+        latent: (float)[B, Dsum]
+
+        Returns
+        -------
+        outs: (long)[B, L]
+
+        """
+        latents = torch.split(latent, self.d_models, dim=1)
+        hs = [latent.unsqueeze(0).contiguous() for latent in latents]
+        B, _ = latent.shape
+        device = latent.device
+
+        out = torch.full(size=(1, B), fill_value=init_token, 
+            device=device, dtype=torch.long)
+        outs = []
+        is_ended = torch.full(size=(B,), fill_value=False,
+            device=device, dtype=torch.bool)
+        for l in range(max_len):
+            x = self.embedding(out)
+            new_hs = []
+            for layer, h in zip(self.layers, hs):
+                x, new_h = layer(x, h)
+                new_hs.append(new_h)
+            hs = new_hs
+            out = torch.argmax(dec2proba(x), dim=-1)
+            outs.append(out)
+            is_ended = torch.logical_or(is_ended, out.squeeze(0) == end_token)
+            if torch.all(is_ended):
+                break
+        outs = torch.cat(outs, dim=0).transpose(0, 1)
+        return outs
+    
+    def beam(self, latent: torch.Tensor, dec2proba: nn.Module,
+            init_token: int, end_token: int, max_len: int, beam_size: int):
+        """
+        Parameters
+        ----------
+        latent: (float)[B, Dsum]
+        
+        E = beam_size
+        """
+        B, Dsum = latent.shape
+        device = latent.device
+        latent = latent.reshape(B, 1, Dsum).expand(B, beam_size, Dsum) \
+            .reshape(B*beam_size, Dsum) # [B*E, Dsum]
+        hs = [latent.unsqueeze(0).contiguous() for latent
+            in torch.split(latent, self.d_models, dim=1)] # [[1, B*E, D]]
+        is_ended = torch.full(size=(B, beam_size), fill_value=False, 
+            device=device, dtype=torch.bool)
+        out = torch.full(size=(1, B*beam_size), fill_value=init_token, 
+            device=device, dtype=torch.long)
+        
+        outs = torch.zeros((0, B, beam_size), dtype=torch.long, device=device) # [0, B, E]
+        proba = torch.zeros((B, beam_size), dtype=torch.float, device=device) # log
+        torch.log_softmax
+        F.log_softmax
+        for L in range(max_len):
+            x = self.embedding(out)
+            new_hs = []
+            for layer, h in zip(self.layers, hs):
+                x, new_h = layer(x, h) 
+                new_hs.append(new_h)
+            hs = new_hs
+
+            x: torch.Tensor = dec2proba(x) # [1, B*E, Ntoken]
+            proba0 = x.log_softmax(dim=-1) # [1, B*E, Ntoken]
+            _, _, voc_size = proba0.shape
+            proba0 = proba0.reshape(B, beam_size, voc_size) # [B, E, Ntoken]
+            proba0 += proba.unsqueeze(-1)
+            
+            proba0[is_ended.unsqueeze(-1).expand(-1, -1, voc_size)] = -torch.inf
+            proba0[:,:,end_token][is_ended] = 0
+
+            proba, topk_beam_voc = proba0.reshape(B, -1).topk(k=beam_size, dim=-1) # [B, E]
+            topk_voc = topk_beam_voc % voc_size # [B, E]
+            topk_beam = torch.div(topk_beam_voc, voc_size, rounding_mode='floor') # [B, E]
+            
+            outs = outs.gather(dim=-1, index=topk_beam.view(1, B, beam_size) \
+                .expand((L, B, beam_size)))
+            is_ended = is_ended.gather(dim=-1, index=topk_beam)
+            outs = torch.cat([
+                outs,
+                topk_voc.unsqueeze(0)
+            ], dim=0)
+            is_ended[topk_voc == end_token] = True
+            out = topk_voc.view(1, B*beam_size)
+            if torch.all(is_ended):
+                break
+        return outs[:,:,0].transpose(0, 1).contiguous()
+
+    def forced(self, tgt: torch.Tensor, latent: torch.Tensor):
+        """
+        Parameters
+        --------
+        tgt: (long)[B, L]
+        latent: (float)[B, Dsum]
+
+        Returns
+        -------
+        output: (float)[B, L, D]
+        """
+        latents = torch.split(latent, self.d_models, dim=1)
+        lengths = torch.sum(tgt != self.padding_idx, dim=1).cpu() # [B]
+        tgt = tgt.T.contiguous() # [L, B]
+        x = self.embedding(tgt) # [L, B, D]
+        x = pack_padded_sequence(x, lengths, enforce_sorted=False)
+        for layer, latent in zip(self.layers, latents):
+            x, h = layer(x, latent.unsqueeze(0))
+        x, lengths = pad_packed_sequence(x, batch_first=True) # [B, L, D]
+        return x
+
+    def cell_forward(self, *args, **kwargs):
+        raise NotImplementedError
+    def prepare_cell_forward(self, *args, **kwargs):
+        raise NotImplementedError
+    def split_beam(self, *args, **kwargs):
+        raise NotImplementedError
 
 @register_module
 class CrossEntropyLoss(nn.CrossEntropyLoss):
@@ -1041,3 +1217,4 @@ class GreedyDecoder(nn.Module):
 
 def get_token_size(input: torch.Tensor, pad_token: int):
     return torch.sum(input != pad_token)
+

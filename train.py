@@ -102,7 +102,7 @@ def main(config, args=None):
     ## deterministic
     if trconfig.deterministic:
         torch.backends.cudnn.deterministic = True
-        torch.use_deterministic_algorithms = True
+        torch.use_deterministic_algorithms(True, warn_only=True)
         torch.backends.cudnn.benchmark = False
     
     # prepare data
@@ -168,6 +168,7 @@ def main(config, args=None):
                 **scheduler)
         def ring(self, batch, model):
             self.scheduler.step()
+            # print(f"SchedulerAlarm.ring scheduler.last_epoch: {self.scheduler.last_epoch}")
     hook_type2class['scheduler_alarm'] = SchedulerAlarmHook
 
     # Prepare abortion
@@ -301,7 +302,6 @@ def main(config, args=None):
                 elif lconfig.type == 'shape':
                     msg += str(list(item.shape))
                 logger.log(level=lconfig.level, msg=msg)
-
             start = time.time()
             batch = model(batch, processes=train_processes, logger=logger)
             

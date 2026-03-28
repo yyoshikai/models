@@ -261,7 +261,7 @@ scheduler_type2class = {
 }
 
 def get_scheduler(optimizer, type, dl_train, n_epoch, opt_freq, 
-        last_epoch=-1, **kwargs):
+        last_epoch=-1, **kwargs) -> lr_scheduler._LRScheduler:
     if type in scheduler_type2class:
         sclass = scheduler_type2class[type]
         if getattr(sclass, 'need_train_info', False):
